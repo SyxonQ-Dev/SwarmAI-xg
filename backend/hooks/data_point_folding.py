@@ -1,8 +1,9 @@
 """Data-point family folding for EVOLUTION.md's `## Corrections Captured`.
 
 The `## Corrections Captured` section is a NARRATIVE region: each `### CLASS ...`
-family accumulates prose sub-bullets (RECURRENCE / CONTAINMENT DATA-POINT records)
-append-only. The existing `evolution_maintenance_hook` lifecycle (deprecate/prune)
+family accumulates prose sub-bullets (data-point records — the exact foldable
+lead markers are enumerated below, in ONE place, so the two lists cannot drift
+apart) append-only. The existing `evolution_maintenance_hook` lifecycle (deprecate/prune)
 only reaches STRUCTURED `### Exxx | date` entries with Status/Usage fields — it is
 structurally blind to this narrative region, so it grows unbounded (the landfill).
 
@@ -10,7 +11,13 @@ This module gives the narrative region the same self-pruning ability, but
 type-aware so it NEVER eats load-bearing judgment:
 
 - Only sub-bullets whose lead marker is a FOLDABLE type are candidates:
-  ``RECURRENCE DATA-POINT`` / ``CONTAINMENT DATA POINT`` / ``CONTAINMENT DATA-POINT``.
+  ``RECURRENCE DATA-POINT`` / ``CONTAINMENT DATA POINT`` /
+  ``CONTAINMENT DATA-POINT`` / a bare ``DATA-POINT``. The bare form folds too —
+  it is easy to assume otherwise, and that assumption has already cost a
+  wasted investigation, so it is spelled out here.
+- Canonical source for the list above: the `_FOLDABLE_MARKERS` tuple below. The
+  prose is a transcription; `test_data_point_folding_doc_parity.py` fails if the
+  two ever disagree.
 - PROTECTED lead markers are never folded: ``METHOD FIX``, ``CONTAINMENT NOTE``,
   ``VALIDATING EVIDENCE``, ``REGRESSION``, ``POSITIVE FOLLOW-ON`` — plus the
   ``### CLASS`` header body itself and any ``META-CORRECTION`` header.

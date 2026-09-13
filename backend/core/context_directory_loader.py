@@ -270,9 +270,13 @@ CONTEXT_FILES: list[ContextFileSpec] = [
     ContextFileSpec("IDENTITY.md",          1,  "Identity",           False, False, "tail"),
     ContextFileSpec("SOUL.md",              2,  "Soul",               False, False, "tail"),
     # SELF.md — resident self-portrait (self-knowledge-loop M3). Non-truncatable,
-    # always injected (priority 2 tier = strong attention). Runtime-owned:
-    # human/distill writes only; auto-cultivation is code-blocked (ddd_cultivation
-    # is_protected_zone). Small (~725 tok) so it never pressures the budget.
+    # always injected (priority 2 tier = strong attention). Runtime-owned, so the
+    # LIVE `.context/SELF.md` is authoritative: the template is copied only when
+    # that file is ABSENT and never overwrites it afterwards — a seed-only edit
+    # therefore does not reach an existing install. The older claim here, that
+    # auto-cultivation is code-blocked via `ddd_cultivation.is_protected_zone`, is
+    # stale: that symbol was DELETED (autonomy-first) and three tests now assert it
+    # no longer exists. Small enough that it never pressures the budget.
     ContextFileSpec("SELF.md",              2,  "Self-Portrait",      False, True,  "tail"),
     ContextFileSpec("AGENT.md",             3,  "Agent Directives",   True,  False, "tail"),
     # ── User-owned (user edits, never overwritten) ───────────────────

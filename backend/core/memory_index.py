@@ -6,8 +6,29 @@ The old 3-layer "L0 Compact Index / L1 Section Selection" system and its
 generator functions (generate_memory_index / keyword_relevance /
 inject_index_into_memory / extract_index_from_memory) were DELETED. Size is
 bounded on the WRITE side (distillation caps + the size-valve archiver), not by
-injection-time section dropping. Recall is pure FTS5+BM25 over the body +
-`.context/*-archive*.md` (the vector leg was removed the same day).
+injection-time section dropping. Recall is keyword-only — the vector leg was
+removed the same day — and reaches the live body and the cold archive by two
+DIFFERENT mechanisms: this module's BM25 scores the live text a caller hands it,
+while `.context/*-archive*.md` is reached through the shared knowledge FTS5 index
+(globbed and indexed by `knowledge_store.sync_knowledge_index`) via recall's
+`library` domain. Conflating the two sends a reader hunting for archive handling
+in the BM25 scorer, which never touches a file.
+
+KNOWN STALE ELSEWHERE: two injected context files still credit the archive leg to
+body-BM25, and they need DIFFERENT fixes because their ownership differs — read
+`context_directory_loader.CONTEXT_FILES` before touching either.
+
+- AGENT.md is ``user_customized=False`` → system-owned: the seed under
+  ``backend/context/`` is authoritative and is re-copied over the live file, so the
+  fix is a seed edit via the governance approval path plus a rebuild.
+- SELF.md is ``user_customized=True`` → runtime-owned: the seed is copied only when
+  the live file is ABSENT and never overwrites it afterwards. The two have already
+  diverged, so editing the seed would be a NO-OP for every existing install. The
+  authoritative copy is the live ``.context/SELF.md``.
+
+Neither was corrected here — both are governance edits, not code changes. Until they
+are, an agent can re-derive the wrong attribution from its own system prompt; treat
+this module and `knowledge_store` as the authority.
 
 This module now provides the surviving parse/score utilities used by that
 recall path.
@@ -489,8 +510,11 @@ def select_memory_sections(
     NO in-prompt index, NO channel-minimal, NO adaptive-budget truncation. Size is
     bounded UPSTREAM by the size-valve (distillation_hook._enforce_size_valve:
     body >30K → archive lowest-value operational to .context until ≤25K), and
-    excluded/archived content is reachable via recall (body-BM25 over
-    .context/*-archive*.md). So the injector's ONLY job is: return the body.
+    archived content stays reachable via recall — through the shared knowledge
+    FTS5 index over .context/*-archive*.md (see knowledge_store.sync_knowledge_index),
+    queried under recall's `library` domain, NOT through this module's body-BM25
+    scorer, which only ranks live text a caller passes in. So the injector's ONLY
+    job is: return the body.
 
     This deliberately RETIRED (old selective machinery, all removed): body-BM25
     section selection, _channel_minimal, _adaptive_max_tokens, EntryRefs 1-hop,

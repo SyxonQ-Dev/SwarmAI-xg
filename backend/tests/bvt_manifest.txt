@@ -37,6 +37,7 @@ test_completion_gate.py
 test_context_brain_health.py
 test_context_templates.py
 test_data_point_folding.py
+test_data_point_folding_doc_parity.py
 test_ddd_canonical_docs_single_source.py
 test_diff_parser.py
 test_distill_write_targets.py

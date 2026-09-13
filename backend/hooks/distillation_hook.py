@@ -103,9 +103,26 @@ BULK_EVICT_LIMIT = 20
 # ── Size-driven archive (hysteresis, 2026-08-14) ────────────────────────────
 # NEW ARCHITECTURE (XG): live MEMORY.md is ALWAYS full-injected into the system
 # prompt regardless of size (there is no selective injection); archived content is
-# recall-only (body-BM25 over .context/*-archive*.md). So the ONLY lever that keeps
-# the always-injected prompt bounded is archiving by TOKEN SIZE — count-caps +
-# time-decay proved too weak (entries stay in-cap + active, so MEMORY grew to ~44K).
+# recall-only — retrievable through the shared knowledge FTS5 index over
+# .context/*-archive*.md (built by knowledge_store.sync_knowledge_index) under
+# recall's `library` domain. That retrievability is what makes eviction safe, and
+# it is a DIFFERENT mechanism from memory_index's body-BM25 scorer, which only
+# ranks live text.
+#   ⚠️ PRECONDITION, verified by driving it: that indexing pass is gated on the
+#   workspace `Knowledge/` directory EXISTING — twice (context_health_hook's
+#   _sync_knowledge_library returns early, and sync_knowledge_index returns early
+#   again). The archive glob runs AFTER both guards even though .context/ is a
+#   SIBLING of Knowledge/, not a child. Measured on a temp workspace holding one
+#   archive shard: Knowledge/ present → the shard's tokens are searchable;
+#   Knowledge/ absent → files_scanned=0 and the same query returns nothing. Neither
+#   the fold path nor this size-valve checks index coverage before relocating, so on
+#   a workspace with no Knowledge/ dir eviction moves content out of the
+#   always-injected file and nothing can reach it. Real installs have Knowledge/, so
+#   this is a latent precondition rather than a live fault — but the safety argument
+#   above depends on it, so do not treat it as unconditional.
+# So the ONLY lever that keeps the always-injected prompt bounded
+# is archiving by TOKEN SIZE — count-caps + time-decay proved too weak (entries
+# stay in-cap + active, so MEMORY grew well past the target).
 #
 # Two water-marks (hysteresis) so archiving does NOT thrash: trigger only when the
 # live BODY (index-block excluded — the index is not injected and is being deleted)
@@ -2610,7 +2627,9 @@ class DistillationTriggerHook:
                 # evergreen-overflow early-return (which abandoned the trim when
                 # evergreen sections alone exceeded LOW) is DELETED: it was the exact
                 # "immune content is a floor" bug. archive != delete — evicted entries
-                # land in .context/*-archive*.md, fully covered by recall (FTS5+BM25);
+                # land in .context/*-archive*.md, which recall reaches through the
+                # shared knowledge FTS5 index under its `library` domain (a single-file
+                # recall of MEMORY.md structurally cannot see them — the domain matters);
                 # age-decay's never-DELETE immunity (assess_decay) is a SEPARATE
                 # mechanism and is untouched. So archiving a principle here does not
                 # lose it and does not delete it — it moves it to recall-backed cold

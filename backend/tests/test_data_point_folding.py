@@ -2,7 +2,10 @@
 
 Testing methodology: pure-function tests over synthetic Corrections sections.
 Key invariants (mirror the goal DoD + Gate-1 findings):
-- Only RECURRENCE/CONTAINMENT DATA-POINT sub-bullets fold; PROTECTED types never.
+- Only whitelisted data-point sub-bullets fold; PROTECTED types never. The
+  whitelist itself lives in `data_point_folding._FOLDABLE_MARKERS` and is pinned
+  against its own docstring by test_data_point_folding_doc_parity.py — these
+  cases exercise the folding LOGIC, not the membership of that list.
 - Per family, keep anchor + capstone(text-marker, NOT date) + recent-2 (cap 4).
 - Idempotent: 2nd run is a no-op (marker records archived run-ids). [Gate-1 F3]
 - Fail-safe: a family with no foldables / at-or-below cap is untouched. [Gate-1 F4]

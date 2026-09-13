@@ -599,8 +599,12 @@ class EvolutionMaintenanceHook:
     ) -> str:
         """Self-prune the `## Corrections Captured` narrative region.
 
-        Folds only RECURRENCE/CONTAINMENT DATA-POINT sub-bullets that exceed the
-        per-family cap; protects METHOD FIX / capstone / etc. Fail-safe: on ANY
+        Folds only data-point sub-bullets that exceed the per-family cap, and only
+        those whose lead marker is on the foldable whitelist. That whitelist lives
+        in `data_point_folding._FOLDABLE_MARKERS` and is documented in that module's
+        docstring — deliberately not restated here, because a marker fact stated
+        outside the one gated enumeration is unreachable by the parity test and would
+        go stale silently. Protects METHOD FIX / capstone / etc. Fail-safe: on ANY
         error the ORIGINAL content is preserved (never eats correction history).
         Returns the (possibly-updated) content; re-reads from disk after a write.
         """
@@ -665,9 +669,11 @@ class EvolutionMaintenanceHook:
                         block_header=header,
                         create_header=(
                             "# EVOLUTION Archive — folded data-points\n\n"
-                            "Full text of RECURRENCE/CONTAINMENT DATA-POINTs folded "
-                            "out of EVOLUTION.md's Corrections Captured section to "
-                            "keep the live cognitive file lean. Traceable by run-id."
+                            "Full text of the data-point sub-bullets folded out of "
+                            "EVOLUTION.md's Corrections Captured section to keep the "
+                            "live cognitive file lean. Nothing here was deleted — it "
+                            "stays searchable through recall's `library` domain, which "
+                            "indexes this file. Traceable by run-id."
                         ),
                         dedup_by_signature=True,
                     )
