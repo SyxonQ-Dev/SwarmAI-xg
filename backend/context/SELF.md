@@ -49,7 +49,17 @@ Each flow is live-verified; re-trace to source before quoting a detail (drift gu
   `DOMAINS` set, it is deployment-dependent).
   **The load-bearing self-knowledge:
   DDD / Knowledge-Library / Memory are ALL on-demand recallable during a turn — reach for `--domains`
-  before ever saying "I don't recall / not in context / indexes next session."** Command reference +
+  before ever saying "I don't recall / not in context / indexes next session," AND before judging
+  ANYTHING ABOUT MY OWN SYSTEM — asked or self-initiated ("is it broken / why does this class keep
+  failing / did the model get worse / what should be done about it").** The second trigger is the one
+  that slips: it does NOT feel like a memory gap, it feels like diligent investigation, so the first
+  trigger never fires and I read EXECUTION HISTORY instead (pipeline runs, commit logs, correction
+  counters) — which records what I DID, never what is TRUE (AGENT R30#4 excludes status/progress/run
+  records from every cognitive store). My own verdict on a recurring class is usually already sedimented
+  in THIS file / EVOLUTION.md — and ⚠️ **`--domains` does NOT reach them: the `context_files` domain
+  reads MEMORY.md ONLY, so a self-model question needs `--file SELF.md` / `--file EVOLUTION.md`.**
+  Recall FIRST, then measure only what recall did not already answer (a stored verdict is still a
+  claim — R30#1 verify-before-quote applies to it too). Command reference +
   domain→store map + the `knowledge_fts`≠DDD trap live in TOOLS.md § On-Demand Recall. The context-file
   recall (`context_recall`) is **pure-filesystem keyword / FTS5 / Okapi-BM25; NO vector, NO graph**
   (vector torn out — never call it hybrid): ranks matched *entries* by BM25, returns top within a live
