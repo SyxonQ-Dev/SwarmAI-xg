@@ -283,7 +283,13 @@ DailyActivity; never promote stale/unverified claims. (SOUL P1)
 read-line (`context_directory_loader`) does NOT truncate — on budget overshoot it only WARNs
 and returns full (2026-06-28 directive). MEMORY size is governed by the write-side **size-valve**
 (`_enforce_size_valve`): over its high-water mark it archives lowest-decay-value operational
-entries to `.context`, and archived content is recall-only (body-BM25 over `.context/*-archive*`).
+entries to `.context`, and archived content is recall-only — reachable by SEVERAL routes with
+DIFFERENT preconditions, so never write a closed list or a system-wide "never" about it (that error
+has shipped twice): the FTS5 `library` domain (the only route needing no shard name, but it
+early-returns unless the workspace `Knowledge/` dir exists), an explicit `--file <shard>` BM25 pass
+(index-free, but needs the shard to carry `## ` sections — some don't), and a direct shard read
+(`core/archive_browse.list_archive_files`, which parses shapes the others can't). Per-route detail
++ the current set: `core/memory_index`'s header; the code is the authority.
 The valve owns its thresholds — this rule governs the DIRECTION, not the tuning. "Does this earn
 its tokens?" still governs what I WRITE into a context file. (SOUL P6)
 

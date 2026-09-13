@@ -105,9 +105,13 @@ BULK_EVICT_LIMIT = 20
 # prompt regardless of size (there is no selective injection); archived content is
 # recall-only — retrievable through the shared knowledge FTS5 index over
 # .context/*-archive*.md (built by knowledge_store.sync_knowledge_index) under
-# recall's `library` domain. That retrievability is what makes eviction safe, and
-# it is a DIFFERENT mechanism from memory_index's body-BM25 scorer, which only
-# ranks live text.
+# recall's `library` domain — the only route needing no shard name (a desktop session's
+# first keyword-bearing recall passes every non-`ddd` domain). Index-free routes also
+# reach the shards, with their own limits: an explicit `--file <shard>` BM25 pass (needs
+# `## ` sections in that shard), and `core/archive_browse.list_archive_files` (its own
+# `### `-aware parser, so it reads what `--file` can't). That plurality is what makes
+# eviction safe — see `core/memory_index`'s header for per-route detail, and never
+# restate a closed list or a system-wide "never" here (both errors have shipped).
 #   ⚠️ PRECONDITION, verified by driving it: that indexing pass is gated on the
 #   workspace `Knowledge/` directory EXISTING — twice (context_health_hook's
 #   _sync_knowledge_library returns early, and sync_knowledge_index returns early
@@ -116,10 +120,16 @@ BULK_EVICT_LIMIT = 20
 #   archive shard: Knowledge/ present → the shard's tokens are searchable;
 #   Knowledge/ absent → files_scanned=0 and the same query returns nothing. Neither
 #   the fold path nor this size-valve checks index coverage before relocating, so on
-#   a workspace with no Knowledge/ dir eviction moves content out of the
-#   always-injected file and nothing can reach it. Real installs have Knowledge/, so
-#   this is a latent precondition rather than a live fault — but the safety argument
-#   above depends on it, so do not treat it as unconditional.
+#   a workspace with no Knowledge/ dir the FTS5 route to evicted content is dead.
+#   The index-free routes are NOT gated on Knowledge/ (context_recall.py touches no
+#   index), so content is degraded-but-reachable rather than lost — the earlier
+#   "nothing can reach it" was too strong, measured on only the FTS5 leg. But the
+#   fallback is UNEVEN, so do not read it as full cover: `--file` needs `## ` sections,
+#   and measured on the live shards the `EVOLUTION-archive-<YYYY-MM>` ones are `### `
+#   blocks that return "no sections parsed" — for those, `archive_browse`'s block
+#   parser is the only index-free reader. Real installs have Knowledge/, so this is a
+#   latent precondition rather than a live fault — but the FTS5 half of the safety
+#   argument depends on it, so do not treat that route as unconditional.
 # So the ONLY lever that keeps the always-injected prompt bounded
 # is archiving by TOKEN SIZE — count-caps + time-decay proved too weak (entries
 # stay in-cap + active, so MEMORY grew well past the target).

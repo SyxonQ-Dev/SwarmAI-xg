@@ -62,8 +62,18 @@ Each flow is live-verified; re-trace to source before quoting a detail (drift gu
   → distilled MEMORY. Live MEMORY.md is **ALWAYS full-injected** (2026-08-14 architecture: no
   selective mode, no section-scoring, no in-prompt index, no injection-time truncation). Size
   is bounded UPSTREAM by a **size-valve** (`_enforce_size_valve`: body >30K → archive lowest-
-  value operational entries to `.context` until ≤25K); archived content is reachable via recall
-  (body-BM25 over `.context/*-archive*.md`). Memory is sovereign (local-first, portable, never
+  value operational entries to `.context` until ≤25K); archived content stays reachable by recall
+  **through SEVERAL routes with DIFFERENT preconditions — I have more than I remember, so never
+  talk myself out of one, and never write a closed count here (that error shipped twice)**: the
+  FTS5 `library` domain — the only one needing no shard name (a desktop session's first
+  keyword-bearing recall passes every non-`ddd` domain), ⚠️ but it early-returns unless the
+  workspace `Knowledge/` dir exists (a SIBLING dir) and a channel session skips recall entirely;
+  an explicit `context_recall_cli.py --file <shard>` BM25 pass — index-free, ⚠️ but it needs `## `
+  sections in that shard (`EVOLUTION-archive-<YYYY-MM>` shards are `### ` blocks → "no sections
+  parsed") and a BODY-vocabulary query (no section-name boost, so `--query Pitfalls` finds
+  nothing); and a direct shard read via `core/archive_browse.list_archive_files`
+  (`GET /api/eval/archive-list`), which parses the shapes the `--file` route can't. Per-route
+  detail: `core/memory_index`'s header. Memory is sovereign (local-first, portable, never
   platform-locked).
 - **Self-evolution** (`core/evolution/`: `correction_tracker` → `judgment_classifier` →
   `governance_router` → `escalation_ladder`) — corrections are bias-tagged, classed, and at 3×

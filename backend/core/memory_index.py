@@ -7,28 +7,54 @@ generator functions (generate_memory_index / keyword_relevance /
 inject_index_into_memory / extract_index_from_memory) were DELETED. Size is
 bounded on the WRITE side (distillation caps + the size-valve archiver), not by
 injection-time section dropping. Recall is keyword-only — the vector leg was
-removed the same day — and reaches the live body and the cold archive by two
-DIFFERENT mechanisms: this module's BM25 scores the live text a caller hands it,
-while `.context/*-archive*.md` is reached through the shared knowledge FTS5 index
-(globbed and indexed by `knowledge_store.sync_knowledge_index`) via recall's
-`library` domain. Conflating the two sends a reader hunting for archive handling
-in the BM25 scorer, which never touches a file.
+removed the same day.
 
-KNOWN STALE ELSEWHERE: two injected context files still credit the archive leg to
-body-BM25, and they need DIFFERENT fixes because their ownership differs — read
-`context_directory_loader.CONTEXT_FILES` before touching either.
+ARCHIVE REACHABILITY — several routes reach ``.context/*-archive*.md``, and the
+recurring defect here is not naming the wrong one, it is writing a CLOSED list or a
+system-wide "never". Two successive revisions of this docstring did exactly that (one
+named a single mechanism, and an injected governance file propagated it as an absolute
+"never body-BM25 over the archive"; the replacement said "TWO mechanisms" and denied a
+third that ships an HTTP endpoint). So treat the list below as the routes MEASURED so
+far, never as exhaustive — grep for the glob pattern to find the current set:
 
-- AGENT.md is ``user_customized=False`` → system-owned: the seed under
-  ``backend/context/`` is authoritative and is re-copied over the live file, so the
-  fix is a seed edit via the governance approval path plus a rebuild.
-- SELF.md is ``user_customized=True`` → runtime-owned: the seed is copied only when
-  the live file is ABSENT and never overwrites it afterwards. The two have already
-  diverged, so editing the seed would be a NO-OP for every existing install. The
-  authoritative copy is the live ``.context/SELF.md``.
+- FTS5 / `library` domain — `knowledge_store.sync_knowledge_index` globs the shards
+  into the shared knowledge index. Early-returns unless the workspace ``Knowledge/``
+  dir exists (a SIBLING of ``.context/``), so this route is not unconditional. It is the
+  one route reached WITHOUT an explicit shard name: `session_router` passes every
+  non-``ddd`` domain — `library` included — to `recall_all` on the session's first
+  keyword-bearing message, so archived text can land in the prompt on its own. Bounded,
+  though: once per session (latched), and a CHANNEL session skips recall entirely.
+- Explicit body-BM25 — `context_recall_cli.py --file <shard>` reads the shard and hands
+  its text to `_section_body_scores` below. Index-free, so it survives ``Knowledge/``
+  being absent — but it is NOT universal, and the boundary is per-SHARD, not per-family:
+  `parse_memory_sections` needs ``## `` headers, so a shard built from ``### `` blocks
+  early-returns ``reason:"no sections parsed"`` before the scorer runs. Measured: MEMORY
+  monthly shards mostly work, ``EVOLUTION-archive-<YYYY-MM>`` shards return "no sections
+  parsed", and the undated legacy ``EVOLUTION-archive.md`` works. Check for ``## `` in the
+  shard before relying on this route. Also query with BODY vocabulary — no section-name
+  boost, so `--query Pitfalls` returns ``hit_layer:"none"`` on a shard whose sections are
+  literally named Pitfalls.
+- Direct shard read — `core/archive_browse.list_archive_files` (served by
+  ``GET /api/eval/archive-list``) does `read_text` per shard with its own glob table and
+  its own ``### ``-aware block parser, so it reads what the `--file` route cannot. Truly
+  index-free. NOTE its sibling `search_archive` (``/api/eval/archive-search``) is NOT
+  this route — it reuses the shared FTS5 index with a family filter, so it inherits the
+  ``Knowledge/`` precondition above.
 
-Neither was corrected here — both are governance edits, not code changes. Until they
-are, an agent can re-derive the wrong attribution from its own system prompt; treat
-this module and `knowledge_store` as the authority.
+WHERE TO FIX THIS PROSE when it drifts again (durable, not a progress note): the same
+statement lives in two injected governance files whose OWNERSHIP differs, so one edit
+shape does not serve both — read ``context_directory_loader.CONTEXT_FILES`` first.
+AGENT.md is ``user_customized=False`` → system-owned: edit the ``backend/context/`` seed
+and rebuild; the live ``.context/`` copy is a projection that only changes on overwrite,
+so a session can keep serving the old text until then. SELF.md is ``user_customized=True``
+→ runtime-owned: the seed is copied ONLY when the live file is absent, so a seed-only
+edit is a NO-OP for every existing install — the live ``.context/SELF.md`` is the
+authoritative copy and must be edited directly.
+
+Scoped negative (measured on ONE function, do not generalize): `_section_body_scores`
+does no file I/O — the caller passes ``memory_content`` in. That constrains this
+module's I/O and says nothing about which text reaches it; an archive shard the CLI
+just read arrives here exactly like a live body.
 
 This module now provides the surviving parse/score utilities used by that
 recall path.
@@ -510,11 +536,9 @@ def select_memory_sections(
     NO in-prompt index, NO channel-minimal, NO adaptive-budget truncation. Size is
     bounded UPSTREAM by the size-valve (distillation_hook._enforce_size_valve:
     body >30K → archive lowest-value operational to .context until ≤25K), and
-    archived content stays reachable via recall — through the shared knowledge
-    FTS5 index over .context/*-archive*.md (see knowledge_store.sync_knowledge_index),
-    queried under recall's `library` domain, NOT through this module's body-BM25
-    scorer, which only ranks live text a caller passes in. So the injector's ONLY
-    job is: return the body.
+    archived content stays reachable via recall by SEVERAL routes — see this module's
+    header for the enumeration and the code as the authority; do not restate a closed
+    list here. So the injector's ONLY job is: return the body.
 
     This deliberately RETIRED (old selective machinery, all removed): body-BM25
     section selection, _channel_minimal, _adaptive_max_tokens, EntryRefs 1-hop,
