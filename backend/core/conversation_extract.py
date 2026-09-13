@@ -30,6 +30,9 @@ Two structural gates enforced in code (NOT left to the prompt):
 
 import json
 import logging
+import re
+
+from core.project_registry import DDD_CANONICAL_DOCS
 
 logger = logging.getLogger(__name__)
 
@@ -128,11 +131,65 @@ def _parse_candidates(text: str) -> list[dict]:
         return []
     cands = obj.get("candidates", []) if isinstance(obj, dict) else []
     # Fail-closed hygiene: drop any candidate missing content or evidence.
-    return [
+    #
+    # target_doc is ALSO validated here, because the model's output is untrusted DATA:
+    # the prompt above asks for one of the four canonical docs, but a prompt is a
+    # suggestion, not a control. Unvalidated, the field flowed verbatim into a stored
+    # proposal and the write followed it — and the human approve step reviews the
+    # CONTENT, not the destination, so the approval click became the delivery step.
+    #
+    # Only a PRESENT-and-non-canonical value is rejected. An ABSENT target_doc is
+    # legitimate: the conversation path defaults it downstream, and several extractions
+    # legitimately omit it. Membership is case-SENSITIVE on purpose — on a
+    # case-insensitive filesystem "tech.md" would resolve to a different, unmanaged
+    # file than the canonical "TECH.md", so normalising the case here would launder
+    # exactly the value that needs rejecting.
+    kept = [
         c for c in cands
         if isinstance(c, dict) and (c.get("content") or "").strip()
         and (c.get("evidence") or "").strip()
+        and (c.get("target_doc") is None or c["target_doc"] in DDD_CANONICAL_DOCS)
     ]
+    for c in kept:
+        c["content"] = _strip_self_assigned_keep_type(c["content"])
+    return kept
+
+
+#: A leading ``[type] `` tag on a lesson body. The cultivated-bullet writer CONSUMES
+#: such a tag and prefers it over its own classification — a deliberate feature for
+#: authored lessons (its docstring: "it was a deliberate tag").
+_TYPE_TAG_RE = re.compile(r"^\s*\[([a-z][a-z\-]{2,20})\]\s+")
+
+
+def _strip_self_assigned_keep_type(content: str) -> str:
+    """Drop a leading ``[keep-class-type]`` tag from UNTRUSTED lesson content.
+
+    Honouring the content's own type tag is intentional for authored lessons, but on
+    this path the body is emitted by an LLM reading channel text, so the tag is
+    attacker-chosen. The four keep-class types (principle/correction/decision/model)
+    are not cosmetic: ``retire_entry`` refuses a keep-class target unless a curator
+    passes ``force=True``. Measured — the same lesson tagged ``[correction]`` refuses
+    to retire, while the identical body left untagged classifies as ``guideline`` and
+    retires normally. So a self-assigned keep-class tag converts an ordinary entry into
+    one that costs a deliberate override to remove.
+
+    Only the TAG is dropped, never the body: the writer then classifies the text on its
+    merits (the same call it makes for the ~all candidates that carry no tag), so a
+    lesson that genuinely reads as a correction can still BE one — it just cannot
+    DECLARE itself one from untrusted input. Non-keep tags pass through untouched,
+    keeping the feature intact for every type that carries no removal protection.
+
+    This belongs at the same boundary that validates ``target_doc``, and for the same
+    reason: the prompt asking for well-behaved output is a suggestion, not a control.
+    """
+    m = _TYPE_TAG_RE.match(content)
+    if not m:
+        return content
+    from core.ddd_entry_lifecycle import _KEEP_TYPES
+
+    if m.group(1) not in _KEEP_TYPES:
+        return content
+    return content[m.end():]
 
 
 def extract_candidates(

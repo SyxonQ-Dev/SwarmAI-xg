@@ -101,13 +101,16 @@ def _check_maturity(proposal: "CultivationProposal", project_dir: Path) -> bool:
     Reads the maturity annotation comment from the DDD doc.
     Format: <!-- maturity: growing | sources: N | ... -->
     """
-    # Six-section resolver (READ, strangler-aware): a migrated DDD keeps canonical
-    # docs under 2-understanding/. A bare `project_dir / doc` would hit the empty
-    # root → doc.exists()==False → maturity always fails → auto-approval silently
-    # denied for every migrated DDD (lessons wrongly escalated to the human queue).
-    from core.ddd_paths import ddd_path
-    doc_path = ddd_path(project_dir, proposal.target_doc)
-    if not doc_path.exists():
+    # PATH CONFINEMENT (shared with both appliers — see _confined_doc_path). This probe
+    # resolves the SAME caller-supplied target_doc and reads it, and it runs EARLIER than
+    # either applier (admission_band → evaluate_auto_approval), so an unguarded traversal
+    # here was an out-of-tree file READ on an unauthenticated path. The helper also keeps
+    # the six-section behaviour this check needs: a migrated DDD keeps canonical docs
+    # under 2-understanding/, and a bare `project_dir / doc` would hit the empty root →
+    # maturity always fails → auto-approval silently denied for every migrated DDD.
+    from core.ddd_cultivation import _confined_doc_path
+    doc_path = _confined_doc_path(project_dir, proposal.target_doc)
+    if doc_path is None:
         return False
 
     try:

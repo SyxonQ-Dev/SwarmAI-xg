@@ -201,6 +201,127 @@ class TestProjectParamTraversalGuard:
         result = await m.list_proposals(project=project)
         assert result["count"] >= 1  # legit project unaffected by the guard
 
+    async def test_direct_call_query_sentinels_do_not_leak(self, tmp_path, monkeypatch):
+        """An unsupplied Query() default must not be mistaken for a caller value.
+
+        FastAPI substitutes the default only through the ASGI app; a DIRECT call leaves
+        the raw Query object, and it is TRUTHY — so `if some_param:` treated the
+        sentinel as user input. Latent while the branches merely assigned; live once one
+        of them validated, and a real corruption on the reject path, where the sentinel
+        is PERSISTED into the proposal JSON (not JSON-serializable → mid-write failure).
+
+        This test exists because the normalisation was initially unpinned: deleting it
+        left the whole suite green, which is how a fix becomes decoration.
+        """
+        project = "SwarmAI"
+        pfile = _write_proposal(
+            tmp_path / "Projects" / project, "qs1", status="pending"
+        )
+        monkeypatch.setattr(
+            m.initialization_manager, "get_cached_workspace_path", lambda: str(tmp_path)
+        )
+
+        # 1. list_proposals with NO project: the sentinel must not reach `"/" in project`
+        #    nor a `Path / project` join further downstream.
+        result = await m.list_proposals()
+        assert isinstance(result.get("count"), int)
+
+        # 2. reject_proposal with NO reason: the sentinel must not be PERSISTED (it is
+        #    not JSON-serializable, so it would fail mid-write).
+        rejected = await m.reject_proposal(proposal_id="qs1", project=project)
+        assert rejected["status"] == "rejected"
+        stored = json.loads(pfile.read_text())
+        assert stored["status"] == "rejected", "the status write did not land"
+        assert stored.get("reject_reason") in (None, ""), (
+            f"a Query sentinel was persisted: {stored.get('reject_reason')!r}"
+        )
+
+    # ── the SIBLING params: the original guard covered `project` only ──────────
+    #
+    # `project` was hardened here; `target_doc` and `target_section` on the SAME
+    # endpoint were not. Both are assigned onto the proposal on truthiness alone and
+    # then reach a filesystem write, so this class now pins the COMPLETE param set
+    # rather than one of three.
+
+    @pytest.mark.parametrize("bad_doc", [
+        "../.context/STEERING.md",
+        "../../.context/STEERING.md",
+        "2-understanding/../../../.context/STEERING.md",
+        "/etc/hosts",
+    ])
+    async def test_approve_rejects_traversal_target_doc(
+        self, tmp_path, monkeypatch, bad_doc
+    ):
+        """A re-target to a non-routable doc is refused at the boundary (400).
+
+        Outer layer only — the load-bearing guard is inside the appliers, because a
+        poisoned proposal that already reached disk is re-hydrated verbatim and never
+        passes through this handler again.
+        """
+        project = "SwarmAI"
+        _write_proposal(tmp_path / "Projects" / project, "pd1", status="pending")
+        monkeypatch.setattr(
+            m.initialization_manager, "get_cached_workspace_path", lambda: str(tmp_path)
+        )
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as ei:
+            # target_section passed explicitly: calling the handler directly leaves
+            # unsupplied Query() defaults as raw FastAPI objects, which would muddy
+            # the assertion with an unrelated downstream failure.
+            await m.approve_proposal(
+                proposal_id="pd1", project=project,
+                target_doc=bad_doc, target_section="Architecture",
+            )
+        assert ei.value.status_code == 400
+
+    async def test_approve_rejects_multiline_target_section(
+        self, tmp_path, monkeypatch
+    ):
+        """A section name carrying a line break cannot forge headings — refuse at 400."""
+        project = "SwarmAI"
+        _write_proposal(tmp_path / "Projects" / project, "ps1", status="pending")
+        monkeypatch.setattr(
+            m.initialization_manager, "get_cached_workspace_path", lambda: str(tmp_path)
+        )
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as ei:
+            await m.approve_proposal(
+                proposal_id="ps1",
+                project=project,
+                target_section="Conventions\n## Forged",
+            )
+        assert ei.value.status_code == 400
+
+    @pytest.mark.parametrize("good_doc", [
+        "TECH.md", "IMPROVEMENT.md", "PRODUCT.md", "PROJECT.md",
+        # The routing table legitimately routes to these three as well. They do not
+        # exist inside a project (so an apply still reports doc_missing), but the
+        # BOUNDARY must not turn a truthful "no such doc" into "invalid parameter" —
+        # a wrong error code sends the next debugger to the wrong layer.
+        "MEMORY.md", "EVOLUTION.md", "KNOWLEDGE.md",
+    ])
+    async def test_approve_accepts_every_routable_doc(
+        self, tmp_path, monkeypatch, good_doc
+    ):
+        """The boundary check must admit the FULL routing set, not just the 4 canonical."""
+        project = "SwarmAI"
+        _write_proposal(tmp_path / "Projects" / project, "pok1", status="pending")
+        monkeypatch.setattr(
+            m.initialization_manager, "get_cached_workspace_path", lambda: str(tmp_path)
+        )
+        from fastapi import HTTPException
+        try:
+            await m.approve_proposal(
+                proposal_id="pok1", project=project,
+                target_doc=good_doc, target_section="Architecture",
+            )
+        except HTTPException as e:
+            # A downstream apply failure (e.g. the doc does not exist) is fine here;
+            # what must NOT happen is a 400 from the parameter guard.
+            assert e.status_code != 400, (
+                f"routable doc {good_doc!r} was rejected by the boundary guard"
+            )
+
 
 class TestApplyToDddLeavesLock:
     """Bug 4 (run_24d9f714) — apply_to_ddd must NOT unlink the flock'd doc .lock.

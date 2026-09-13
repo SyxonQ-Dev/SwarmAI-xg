@@ -16,7 +16,7 @@ Public API:
     CultivationProposal  — data model for a single proposal
     filter_lessons_for_ddd(lessons, run_id, project[, project_dir]) → List[CultivationProposal]
     apply_to_ddd(proposal, project_dir) → str (applied|duplicate|section_not_found|not_safe|doc_missing|locked)
-    apply_retire_proposal(proposal, project_dir) → str (retired|rewritten|no_target|doc_missing|retire_failed:…)
+    apply_retire_proposal(proposal, project_dir) → str (retired|rewritten|no_target|doc_missing|retire_failed:…|rewrite_refused:…|rewrite_partial:…)
     log_application(proposal, project_dir) → None
     write_proposal(proposal, project_dir) → Path  (escalation path only)
     read_pending_proposals(workspace_dir, project) → List[CultivationProposal]
@@ -268,6 +268,208 @@ class CultivationProposal:
 # adversarial judge (admission_band) decides every proposal; a judge-pass writes ANY doc
 # incl SELF/PRODUCT/TECH. (The orchestrator's own _SEMANTIC_SECTIONS on the value-refresh
 # carve-out paths is a SEPARATE mechanism and is intentionally left untouched.)
+
+_ATX_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
+
+# The maturity annotation is read with a bare ``re.search`` (``ddd_auto_approval``
+# ``_check_maturity``), i.e. it is NOT anchored to line start or end — so unlike the
+# other lexers it matches at any offset, and a guard must scan the whole value rather
+# than line-by-line. Mirrored here rather than imported to keep this module free of a
+# reverse dependency on its own consumer.
+_MATURITY_ANNOTATION_RE = re.compile(r"maturity:\s*\w+")
+
+# Syntax a section NAME may never carry. It is interpolated after a `## ` prefix, so it
+# shares the heading line: a leading `#` deepens the heading and an embedded HTML comment
+# lands an annotation the maturity reader consumes. Anchored `#` only at the start —
+# a `#` inside a title (e.g. "Issue #12") is ordinary prose and stays allowed.
+_SECTION_NAME_FORBIDDEN_RE = re.compile(r"^\s{0,3}#|<!--|-->|maturity:\s*\w+")
+
+
+def _is_single_line(value: str) -> bool:
+    r"""Whether ``value`` occupies exactly one line AS THE DOCUMENT PARSER SEES IT.
+
+    Deliberately delegates to ``str.splitlines()`` rather than testing for ``\n``/
+    ``\r``, because ``splitlines`` is what the DDD entry parser
+    (``ddd_entry_lifecycle``) uses — and it splits on ELEVEN separators, not two:
+    LF, CR, CR+LF, VT, FF, FS, GS, RS, NEL (U+0085), LS (U+2028), PS (U+2029).
+
+    A guard calibrated to a NARROWER lexer than its sink is a bypass, not a control:
+    an earlier version of this check rejected only ``\r``/``\n``, so U+2028 passed and
+    forged a heading the parser then read as a real section. When validating a value
+    that flows into a structured document, test it with the same splitter the
+    document's own parser uses.
+    """
+    return len(value.splitlines()) <= 1
+
+
+def _is_safe_section_name(target_section: str) -> bool:
+    """Whether ``target_section`` is safe to interpolate into a ``## {name}`` heading.
+
+    The auto-create branch of ``apply_to_ddd`` writes ``f"## {target_section}"``, so a
+    separator-bearing value forges ADDITIONAL headings — enough to fabricate a whole
+    governance section from one proposal. ``target_section`` is caller-supplied on the
+    same paths as ``target_doc`` (an approve-time re-target, or an LLM-emitted field),
+    so it needs its own control: path containment cannot help, because a separator
+    inside a path is just a literal path component and stays inside the tree.
+
+    Refused rather than sanitised — silently rewriting a caller's section name would
+    make the written location differ from the requested one. A blank or whitespace-only
+    name is refused too: it yields a heading with no title, which the parser cannot
+    address and a reader cannot interpret.
+
+    Single-line is necessary but NOT sufficient, because the value is interpolated AFTER
+    a ``## `` prefix and so shares the line with it. Two one-line forgeries were measured:
+    a leading ``#`` yields ``## # Forged`` / ``## ## Forged`` (a deeper heading the reader
+    sees as its own section), and an embedded ``<!-- maturity: evergreen -->`` lands the
+    annotation on the heading line itself, where ``_check_maturity`` reads it — the same
+    payload as the content-side forgery, reached through the other field. So this rejects
+    heading markers and comment/annotation syntax as well; measured against the live
+    corpus's 197 distinct section names, none is refused.
+    """
+    if not target_section.strip() or not _is_single_line(target_section):
+        return False
+    return not _SECTION_NAME_FORBIDDEN_RE.search(target_section)
+
+
+def _is_safe_entry_content(content: str) -> bool:
+    """Whether ``content`` can be written into a DDD doc without forging STRUCTURE.
+
+    ``target_section`` was not the only caller-supplied field reaching the document —
+    ``content`` is interpolated into the same file and is fully attacker-controlled on
+    the conversation path (an LLM emits it from untrusted channel text). A payload
+    carrying its own structural line therefore fabricates document structure INSIDE an
+    approved document, which neither path containment nor section-name hygiene can
+    catch: the write lands exactly where it was allowed to.
+
+    THE CALIBRATION RULE — validate against EVERY lexer that parses the sink, not one.
+    An earlier version refused only ATX headings, which is one of FIVE primitives the
+    written file is parsed with, so four forgeries passed. Each was reproduced:
+
+      * ``_ENTRY_RE`` — a continuation line ``- [correction] **Title** …`` is read as a
+        SECOND, independent entry whose type the attacker chooses. Choosing one of
+        ``_KEEP_TYPES`` (correction/decision/principle/model) makes the forgery
+        HARDER TO DELETE than a legitimate entry: ``retire_entry`` refuses a keep-class
+        target without ``force=True``.
+      * ``_ENTRY_RE_PROSE`` — the same, reached through a leading emoji/arrow glyph.
+      * ``_META_RE`` — a forged ``<!-- ref:N | last:… | decay:… -->`` line is read as
+        genuine lifecycle metadata, so the entry can self-stamp a reference count and
+        an expiry that background decay then honours.
+      * the maturity annotation (``_MATURITY_ANNOTATION_RE``) — measured: injecting it
+        flipped ``_check_maturity`` from ``False`` to ``True`` for the whole section.
+        (That criterion is currently SOFT — ``admission_band`` consumes only
+        ``small_magnitude`` and ``circuit_breaker_ok`` — so this is not privilege
+        escalation TODAY; it is refused because an attacker-writable input to an
+        approval criterion becomes one the moment that criterion is made hard.)
+
+    Refused rather than escaped, and NOT reduced to "single line only": measured against
+    the live corpus, 13363 of 129377 real bullets legitimately span multiple lines, so a
+    single-line rule would break a tenth of the corpus. The rule is narrower and exact —
+    a continuation line may not OPEN a new structure. The first line is exempt from the
+    entry/meta lexers because the writer prefixes it with ``- ``, which is what makes it
+    a bullet body rather than a line the parser reads independently; it is still checked
+    against the heading lexer, which line-start-anchors regardless of that prefix.
+    """
+    lines = content.splitlines()
+    if not lines:
+        return True
+    if _ATX_HEADING_RE.match(lines[0]):
+        return False
+    from core.ddd_entry_lifecycle import _ENTRY_RE, _ENTRY_RE_PROSE, _META_RE
+    for line in lines[1:]:
+        if (
+            _ATX_HEADING_RE.match(line)
+            or _ENTRY_RE.match(line)
+            or _ENTRY_RE_PROSE.match(line)
+            or _META_RE.match(line)
+        ):
+            return False
+    # Whole-value scan, not per-line: this lexer is an unanchored ``re.search``.
+    return not _MATURITY_ANNOTATION_RE.search(content)
+
+
+def _confined_doc_path(project_dir: "Path | str", target_doc: str) -> "Path | None":
+    """Resolve ``target_doc`` and return it ONLY if it is a regular file inside
+    ``project_dir``; otherwise ``None`` (the caller turns that into a refusal).
+
+    WHY THIS EXISTS — ``ddd_path`` deliberately passes an UNKNOWN key through
+    unchanged (``ddd_paths.py`` "Unknown key: pass through unchanged") so callers
+    can resolve ad-hoc names like ``.artifacts``. That pass-through also preserves
+    traversal segments, so every write/read target derived from a caller-supplied
+    ``target_doc`` was unbounded: ``"../.context/STEERING.md"`` resolved outside the
+    project and the appliers wrote there. ``ddd_path`` itself must NOT be hardened —
+    it serves READ paths and legitimate ad-hoc keys — so containment belongs at each
+    sink, which is what this helper gives them.
+
+    Confinement root is ``project_dir``, NOT ``2-understanding/``: EVOLUTION.md,
+    KNOWLEDGE.md and MEMORY.md legitimately resolve to the project ROOT (they simply
+    do not exist there, so those keys still fall through to the caller's
+    "doc_missing" branch — a legitimate routing outcome, not an attack).
+
+    This is PATH CONFINEMENT (where may we write), which is orthogonal to ADMISSION
+    AUTHORITY (what is worth writing). It deliberately does NOT re-introduce the
+    doc-identity whitelist that ``admission_band`` removed on purpose — any doc
+    inside the project stays writable.
+
+    Three failure modes are handled because each was measured, not theorised:
+      * ``Path.resolve()`` raises ``RuntimeError`` on a symlink loop and
+        ``ValueError`` on an embedded NUL — both outside the ``OSError`` an
+        ``except OSError`` would catch, so all three are caught here.
+      * BOTH sides are resolved: resolving only the target while ``project_dir``
+        is itself a symlink makes every legitimate path look external.
+      * ``is_file()`` is required, not just containment: a DIRECTORY-valued
+        ``target_doc`` (``""``, ``"."``, or a key ``ddd_paths`` maps to ``"."``)
+        is contained AND exists, so it passed a containment-only guard and then
+        crashed the applier with ``IsADirectoryError``.
+
+    Symlinks are resolved, which is the desired behaviour in both directions: an
+    in-tree symlink pointing at an in-tree file stays allowed (a real DDD does
+    this), while one pointing out of the tree is refused.
+
+    A HARDLINK, however, has no link to follow — it is a second NAME for one inode, so
+    resolution cannot see out of the tree and containment alone reads it as legitimate.
+    That is not symmetric between the two sinks: the append applier commits through
+    ``os.replace`` onto a fresh temp file, which breaks the link and leaves the other
+    name untouched, but the retire applier writes back IN PLACE
+    (``ddd_entry_lifecycle`` ``write_text``), which mutates the shared inode. Measured:
+    an in-tree hardlink to an out-of-tree governance file let a retire proposal DELETE a
+    rule from it, and the intended safety net — asserting no new sibling files appear
+    next to the victim — could not see it, because the archive and lock files land
+    in-tree beside the link. So a multiply-linked file is refused here, at the shared
+    chokepoint, rather than by making one applier's commit strategy load-bearing:
+    measured against the live corpus, all 69 real DDD documents have ``st_nlink == 1``.
+    """
+    try:
+        root = Path(project_dir).resolve()
+        candidate = ddd_path(root, target_doc).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None  # unresolvable → refuse (fail-closed)
+    if candidate != root and root not in candidate.parents:
+        # Escapes the project tree. This ALSO covers a symlink pointing out of the tree,
+        # because both sides are resolved before the comparison — measured: an in-project
+        # `TECH.md` symlinked to an out-of-tree file is refused here, so a separate
+        # blanket `is_symlink()` refusal adds no security and only breaks the in-tree
+        # symlink shape a live project actually uses. It does NOT cover a hardlink —
+        # see the `st_nlink` check below.
+        return None
+    if not candidate.is_file():
+        return None  # missing, or a directory (would raise IsADirectoryError)
+    try:
+        if candidate.stat().st_nlink != 1:
+            return None  # multiply-linked → an in-place write reaches the other name
+    except OSError:
+        return None  # unstattable → refuse (fail-closed)
+    if candidate.suffix.lower() != ".md":
+        # These appliers write a MARKDOWN BULLET under a `## heading`. Appending that to
+        # a structured in-tree file is not a smaller version of a DDD write — it is
+        # corruption: measured, an append to a project's `aim.json` left it unparseable
+        # (JSONDecodeError) and one to `bindings.yaml` broke the YAML. And an in-tree
+        # `AGENTS.md`-style instruction file is the same class of prompt-injection target
+        # as the governance file this containment exists to protect, so "inside the
+        # project" is necessary but not sufficient. The format the writer produces IS
+        # the constraint on what it may write to.
+        return None
+    return candidate
+
 
 # M2: instance-log / slip signatures — text that is an EVENT record, not a
 # generalizable lesson. These must never be cultivated into DDD.
@@ -846,9 +1048,42 @@ def apply_to_ddd(proposal: CultivationProposal, project_dir: Path) -> str:
     # the new location when it exists, else the old root (un-migrated DDDs). We both
     # READ and WRITE-BACK this same resolved path below, so reads/writes never
     # diverge (no split-brain) — ddd_path (not ddd_write_path) is correct here.
-    doc_path = ddd_path(project_dir, proposal.target_doc)
-    if not doc_path.exists():
+    # PATH CONFINEMENT before ANY read, lock, or write: target_doc is caller-supplied
+    # (an approve-time re-target, or an LLM-emitted field on the conversation path), and
+    # ddd_path's unknown-key pass-through preserves traversal — so without this the
+    # append landed wherever target_doc pointed, including a governance file outside the
+    # project. Ordered ahead of the lock deliberately: a refusal must not create a
+    # `<victim>.md.lock` sidecar next to a file we are declining to touch.
+    doc_path = _confined_doc_path(project_dir, proposal.target_doc)
+    if doc_path is None:
+        # Not reachable, not a regular file, or outside the project tree. Reported as
+        # doc_missing (an existing status every caller already treats as a failure)
+        # rather than a new string, so no caller's success test has to change.
+        logger.warning(
+            "apply_to_ddd: refused target outside the project tree or not a file (%r)",
+            proposal.target_doc,
+        )
         return "doc_missing"
+
+    # STRUCTURE HYGIENE on every caller-supplied field that reaches the document. The
+    # class is "a caller-supplied string is interpolated into a structured file", so
+    # BOTH fields that land there are checked against the lexer that parses it —
+    # guarding only one of them left the same forgery reachable through the other.
+    # Refused as not_safe (the existing status for "not an acceptable destination").
+    if not _is_safe_section_name(proposal.target_section):
+        logger.warning(
+            "apply_to_ddd: refused a structurally-unsafe section name (%r)",
+            proposal.target_section,
+        )
+        return "not_safe"
+    if not _is_safe_entry_content(proposal.content):
+        logger.warning(
+            "apply_to_ddd: refused entry content that would forge document structure "
+            "(a heading, a second entry bullet, lifecycle metadata, or a maturity "
+            "annotation) at target %s#%s",
+            proposal.target_doc, proposal.target_section,
+        )
+        return "not_safe"
 
     # Advisory doc-write lock via the SHARED helper (run_06350217): EVERY writer of
     # this doc — apply_to_ddd, orchestrator auto-apply/decay/llm-apply, retire —
@@ -1232,8 +1467,14 @@ def detect_contradiction(
     if not text or not isinstance(text, str):
         return None
     try:
-        doc_path = ddd_path(project_dir, target_doc)
-        if not doc_path.exists():
+        # PATH CONFINEMENT (same fence as both appliers and the maturity probe — see
+        # _confined_doc_path). A READ sink is still a sink: target_doc is caller-supplied
+        # (LLM-parsed from untrusted conversation text), and the titles parsed out of the
+        # resolved document flow back into the returned flag, so an unguarded traversal
+        # leaked out-of-tree governance content into a proposal. The helper also refuses a
+        # FIFO, whose read_text() would block the cultivation loop forever.
+        doc_path = _confined_doc_path(project_dir, target_doc)
+        if doc_path is None:
             return None
         from core.ddd_entry_lifecycle import parse_entries
         content = doc_path.read_text(encoding="utf-8")
@@ -1331,9 +1572,12 @@ def _locate_target_entry(
     Uses parse_entries(include_prose=True) so both **bold** entries and curated
     prose bullets are candidates. Fail-safe: no doc/entries/overlap → None → append.
     """
-    # Six-section resolver (READ, strangler-aware) — see apply_to_ddd note.
-    doc_path = ddd_path(project_dir, target_doc)
-    if not doc_path.exists():
+    # PATH CONFINEMENT + six-section resolver (READ, strangler-aware) — see
+    # _confined_doc_path. The (title, section) this returns becomes the identity
+    # retire_entry then matches on, so an out-of-tree read here would hand the
+    # destructive sink a target parsed from a file outside the project.
+    doc_path = _confined_doc_path(project_dir, target_doc)
+    if doc_path is None:
         return None
     try:
         from core.ddd_entry_lifecycle import (
@@ -1467,8 +1711,19 @@ def apply_retire_proposal(proposal: CultivationProposal, project_dir: Path) -> s
     # (source_path.parent), not the raw project root (run_f71e5920: the old root
     # placement created a read/write split-brain that regenerated a 17MB orphan
     # every decay tick under the pre-migration path).
-    doc_path = ddd_path(project_dir, proposal.target_doc)
-    if not doc_path.exists():
+    # PATH CONFINEMENT before ANY read, lock, archive, or strip — see the identical
+    # guard in apply_to_ddd and _confined_doc_path's docstring. This sink is the
+    # DESTRUCTIVE one (archive + entry-strip), and its out-of-tree effects are sibling
+    # CREATIONS — an `<stem>-archive.md` co-located with the resolved doc, plus the
+    # `<doc>.md.lock` advisory lock — so an unguarded traversal here littered files
+    # beside a governance file even when the strip itself found no match.
+    doc_path = _confined_doc_path(project_dir, proposal.target_doc)
+    if doc_path is None:
+        logger.warning(
+            "apply_retire_proposal: refused target outside the project tree or not a "
+            "file (%r)",
+            proposal.target_doc,
+        )
         return "doc_missing"
 
     # PREVENTION over recovery (run_e9cb7e2a, Gate-2 MED): for a REWRITE, validate the
@@ -1480,6 +1735,18 @@ def apply_retire_proposal(proposal: CultivationProposal, project_dir: Path) -> s
         _repl = proposal.replacement_content.strip()
         if _repl and (len(_repl) < MIN_LESSON_LENGTH or not is_quality_lesson(_repl)):
             return "retire_failed:replacement below value floor (too short / not a lesson)"
+        # The STRUCTURE floor belongs here for the same reason the value floor does.
+        # apply_to_ddd refuses a replacement that would forge document structure, but
+        # it runs AFTER retire_entry has archived+stripped the old entry — so a
+        # refusal there produces exactly the half-state this block exists to prevent
+        # (curated entry gone, nothing appended, status rewrite_partial:not_safe).
+        # Reproduced before this guard existed: a replacement clearing the value floor
+        # but carrying a forged entry bullet deleted the target and landed nothing.
+        # Both predicates must gate the retire, not just the append.
+        if not _is_safe_entry_content(_repl):
+            return "retire_failed:replacement would forge document structure"
+        if not _is_safe_section_name(proposal.target_section):
+            return "retire_failed:target section name is not a plain single-line heading"
 
     from core.ddd_entry_lifecycle import retire_entry, RetireError
 
@@ -1530,8 +1797,28 @@ def apply_retire_proposal(proposal: CultivationProposal, project_dir: Path) -> s
         append_status = apply_to_ddd(replacement, project_dir)
         if append_status in ("applied", "created_section"):
             return "rewritten"
-        # Retire succeeded but append didn't — original is in archive + git.
-        return f"rewrite_partial:{append_status}"
+        # ROLLBACK, not a status string. Pre-gating the append's refusal REASONS was
+        # the wrong shape: the value floor and the two structure predicates are only
+        # three of them, and a rewrite refused for any OTHER reason still left the
+        # half-state (measured: a replacement duplicating an existing bullet returned
+        # rewrite_partial:duplicate with the target entry archived+stripped and nothing
+        # appended — a targeted deletion primitive carrying no forged content). Every
+        # future refusal reason is covered by restoring the pre-retire bytes instead of
+        # by enumerating reasons. The snapshot is `content`, read under the same lock
+        # the strip held, so it is the exact text retire_entry mutated.
+        try:
+            with md_lock(doc_path, blocking=True):
+                doc_path.write_text(content, encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            # Restoration itself failed — the original is still recoverable from the
+            # archive + git, which is what rewrite_partial has always meant.
+            logger.error(
+                "apply_retire_proposal: rewrite append failed (%s) AND rollback failed "
+                "(%s) for %s — original recoverable from %s + git",
+                append_status, type(e).__name__, proposal.target_doc, archive_name,
+            )
+            return f"rewrite_partial:{append_status}"
+        return f"rewrite_refused:{append_status}"
 
     return "retired"
 

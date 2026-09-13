@@ -32,11 +32,39 @@ from core.ddd_cultivation import (
     apply_to_ddd,
     apply_retire_proposal,
     log_application,
+    _is_safe_section_name,
 )
+from core.persist_routing import ROUTING_TABLE
 from utils.file_lock import flock_exclusive_nb, flock_unlock
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/cultivation", tags=["cultivation"])
+
+# Every doc the routing table can legitimately target. DERIVED, never hand-listed, so a
+# new route cannot silently become un-approvable at this boundary. Broader than the
+# 4-name canonical tuple on purpose — see the note at the re-target guard below.
+_ROUTABLE_DOCS = frozenset(
+    r["doc"] for r in ROUTING_TABLE.values() if r.get("doc")
+)
+
+
+def _query_str(value, default=None):
+    """Return ``value`` if it is a real string, else ``default``.
+
+    FastAPI substitutes a ``Query(...)`` default only when a handler is invoked through
+    the ASGI app. A DIRECT call — a test, or any internal caller — leaves the raw
+    ``Query`` object in the parameter, and that object is TRUTHY. So the idiomatic
+    ``if some_param:`` treated the sentinel as a caller-supplied value.
+
+    This was latent for as long as the branches merely ASSIGNED the value, and became
+    visible the moment one of them started validating it. It is a class bug, not a
+    local one: ``reject_proposal``'s ``reason`` is written into the proposal JSON, where
+    the sentinel raises ``TypeError: Object of type Query is not JSON serializable``
+    mid-write, and ``list_proposals``' ``project`` reaches a ``"/" in project`` test
+    that raises on a non-string. Normalising in one shared place is what keeps the three
+    handlers from drifting apart again.
+    """
+    return value if isinstance(value, str) else default
 
 
 def _resolve_project_dir(project: str) -> Path:
@@ -57,6 +85,10 @@ def _resolve_project_dir(project: str) -> Path:
 
     # Reject traversal BEFORE any filesystem touch. A legit project is a single
     # path segment (no "/", "\\", or ".." component).
+    # Normalise the sentinel first (see _query_str): a direct caller can pass the raw
+    # Query object, and the separator test below raises TypeError on a non-string —
+    # which would turn a validation guard into a 500 rather than a 400.
+    project = _query_str(project, "SwarmAI")
     if "/" in project or "\\" in project or ".." in Path(project).parts:
         raise HTTPException(status_code=400, detail="Invalid project name")
 
@@ -75,6 +107,10 @@ def _resolve_project_dir(project: str) -> Path:
 @router.get("/proposals")
 async def list_proposals(project: str = Query(default="SwarmAI")):
     """List all pending (non-expired) DDD cultivation proposals for a project."""
+    # Normalise at the ENTRY, not just inside the resolver: `project` is used again
+    # below (read_pending_proposals), so a resolver-local normalisation would protect
+    # the guard and still let the raw Query sentinel reach a path join. See _query_str.
+    project = _query_str(project, "SwarmAI")
     # Validate + resolve (fail-closed traversal guard); root is its parent's parent.
     project_dir = _resolve_project_dir(project)
     root = project_dir.parent.parent
@@ -118,9 +154,49 @@ async def approve_proposal(
             raise HTTPException(status_code=404, detail=f"Proposal '{proposal_id}' not found")
 
         # Approve-time re-target: only override fields explicitly supplied (§9-D1).
+        #
+        # "Explicitly supplied" must mean a real STRING. FastAPI substitutes the
+        # Query(...) default only when the handler is called through the ASGI app; a
+        # direct call (tests, or any internal caller) leaves the raw Query object in
+        # place, and it is truthy — so a bare `if target_doc:` treated the sentinel as
+        # a user-supplied value. That was harmless while the branch merely assigned,
+        # and became visible the moment it validated. Normalise once, here.
+        target_doc = _query_str(target_doc)
+        target_section = _query_str(target_section)
+        #
+        # Both overrides are attacker-controllable on this unauthenticated endpoint —
+        # the same property that made `project` need _resolve_project_dir above. They
+        # are VALIDATED here as an outer layer; the load-bearing containment lives in
+        # the appliers themselves, because a proposal that already reached disk is
+        # re-hydrated verbatim by CultivationProposal.from_dict and never passes back
+        # through this handler.
+        #
+        # target_doc is checked against the ROUTING TABLE's doc set, not the narrower
+        # 4-name canonical tuple: the routing table legitimately names MEMORY.md /
+        # EVOLUTION.md / KNOWLEDGE.md too. Those do not exist inside a project, so an
+        # apply still reports doc_missing — but that is a truthful "no such doc", and
+        # turning it into "invalid parameter" here would send the next debugger to the
+        # wrong layer. Membership is case-SENSITIVE on purpose: on a case-insensitive
+        # filesystem "tech.md" resolves to a different, unmanaged file than "TECH.md".
         if target_doc:
+            if target_doc not in _ROUTABLE_DOCS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"target_doc must be a routable DDD document, got '{target_doc}'",
+                )
             proposal.target_doc = target_doc
         if target_section:
+            # A section name is interpolated into a `## {name}` heading downstream, so a
+            # line break would forge additional headings — enough to fabricate a whole
+            # governance section from one approve call.
+            if not _is_safe_section_name(target_section):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "target_section must be a non-blank single line without a "
+                        "leading heading marker or HTML-comment/maturity syntax"
+                    ),
+                )
             proposal.target_section = target_section
 
         # Dispatch on change_type (run_b8f10185): append → apply_to_ddd (the additive
