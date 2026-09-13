@@ -67,9 +67,9 @@ _GATE_IDS = ("gate0-skeptic", "gate1-skeptic", "gate2-adversarial")
 # lines, trailing newline included). Measured pre-move; never recompute these
 # from the post-move files — that would make the check circular.
 _PRE_MOVE_SHA256 = {
-    "gate0-skeptic": "8039bcb42857ed1bcf0436b0db250af94f4782d4c18f3724bcc80a0714aacec1",
-    "gate1-skeptic": "b81db3c969fbf5e207748c589d2777b53967e76589bc25984ecd3f06e8948570",
-    "gate2-adversarial": "180f353dd61eceb9d5bdbabc15762ae02353870ca8f56a5398d747478dc2993e",
+    "gate0-skeptic": "8039bcb42857ed1bcf0436b0db250af94f4782d4c18f3724bcc80a0714aacec1",  # pragma: allowlist secret
+    "gate1-skeptic": "b81db3c969fbf5e207748c589d2777b53967e76589bc25984ecd3f06e8948570",  # pragma: allowlist secret
+    "gate2-adversarial": "180f353dd61eceb9d5bdbabc15762ae02353870ca8f56a5398d747478dc2993e",  # pragma: allowlist secret
 }
 
 
