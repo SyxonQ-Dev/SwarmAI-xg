@@ -27,7 +27,7 @@ import { useTheme } from '../contexts/ThemeContext';
  * governs the first paint (and the "Configure later" path, where showing a
  * model the user is not running is the actual bug).
  */
-export const FALLBACK_FLAGSHIP_MODEL = 'claude-opus-5';
+export const FALLBACK_FLAGSHIP_MODEL = 'claude-opus-4-8';
 
 interface OnboardingPageProps {
   onComplete: () => void;

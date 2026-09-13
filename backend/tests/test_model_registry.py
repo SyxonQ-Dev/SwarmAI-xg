@@ -109,35 +109,50 @@ class TestFlagshipOrdering:
     def test_flagship_is_first(self):
         assert reg.MODEL_NAMES[0] == reg.FLAGSHIP_MODEL
 
-    def test_first_entry_is_the_NEWEST_model_independently_of_the_derivation(self):
-        """The teeth for flagship-first — derived independently of FLAGSHIP_MODEL.
+    def test_flagship_is_the_deliberately_chosen_opus_4_8_not_the_newest(self):
+        """The teeth for flagship-first — pinned to the CHOSEN model, not the newest.
 
         ``FLAGSHIP_MODEL`` is *defined* as ``MODEL_NAMES[0]``, so asserting
-        ``MODEL_NAMES[0] == FLAGSHIP_MODEL`` is a tautology: it stays GREEN even
-        if a newer model is appended at the END (verified by mutation — that
-        exact reordering did not turn the tautological test red).
+        ``MODEL_NAMES[0] == FLAGSHIP_MODEL`` is a tautology (stays GREEN even if
+        the order is wrong). This test instead pins the ACTUAL chosen flagship at
+        index 0.
 
-        This test instead compares VERSIONS: the first entry must be the highest
-        opus version present. Moving a newer model out of first place turns it
-        RED, which is what protects settings.py's ``new_models[0]`` auto-reset
-        from silently selecting an older model as the default.
+        The flagship is DELIBERATELY CHOSEN, not "newest-version-wins":
+        claude-opus-5 is present and selectable but is intentionally NOT the
+        default (it ran far slower per turn, did not follow sedimented cognition,
+        and did not converge on adversarial loops). So the guard is no longer
+        "newest must be first" — it is "the chosen model (opus-4-8) must be first,
+        and a higher-version model may sit behind it."
+
+        Teeth: re-promoting claude-opus-5 (or any other model) to index 0 turns
+        this RED — which is what protects settings.py's ``new_models[0]``
+        auto-reset from silently re-selecting opus-5 as the default (the exact
+        drift this pin exists to prevent).
         """
-        # Rank across ALL families (model_version), not opus-only: an
-        # opus-only ranking spuriously FAILS the moment a sonnet becomes the
-        # flagship, because no sonnet would be in the ranking set at all.
-        versions = {
-            name: reg.model_version(name)
-            for name in reg.MODEL_NAMES
-            if reg.model_version(name) is not None
-        }
-        assert versions, "registry has no rankable model"
-        # Compare (major, minor) only — the family string must not decide order.
-        newest = max(versions, key=lambda n: versions[n][1:])
-        assert reg.MODEL_NAMES[0] == newest, (
-            f"MODEL_REGISTRY must list the newest model FIRST — found "
-            f"{reg.MODEL_NAMES[0]!r} first but {newest!r} is newer. "
-            f"settings.py auto-resets default_model to available_models[0], so a "
-            f"newest-last order silently downgrades the default."
+        assert reg.MODEL_NAMES[0] == "claude-opus-4-8", (
+            f"MODEL_REGISTRY must list the chosen flagship claude-opus-4-8 FIRST "
+            f"— found {reg.MODEL_NAMES[0]!r} at index 0. settings.py auto-resets "
+            f"default_model to available_models[0]; a different first entry "
+            f"silently changes the default model."
+        )
+        assert reg.FLAGSHIP_MODEL == "claude-opus-4-8", (
+            f"FLAGSHIP_MODEL must derive to claude-opus-4-8, got "
+            f"{reg.FLAGSHIP_MODEL!r}"
+        )
+
+    def test_opus_5_remains_available_but_not_flagship(self):
+        """opus-5 is DOWNGRADED, never removed — it must stay selectable.
+
+        The change that pinned opus-4-8 as flagship must NOT delete opus-5: a
+        user can still pick it explicitly. Teeth: dropping opus-5 from the
+        registry (rather than merely moving it off first place) turns this RED.
+        """
+        assert "claude-opus-5" in reg.MODEL_REGISTRY, (
+            "claude-opus-5 must remain in MODEL_REGISTRY (downgraded from "
+            "flagship, not removed — it stays a selectable model)"
+        )
+        assert reg.MODEL_NAMES[0] != "claude-opus-5", (
+            "claude-opus-5 must NOT be first (it is intentionally not the default)"
         )
 
     def test_default_config_default_model_is_flagship(self):

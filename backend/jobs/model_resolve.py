@@ -177,7 +177,8 @@ def _flagship_fallback() -> str:
         )
     # Only reachable if model_registry itself is unimportable, in which case the
     # job is going to fail anyway; a plausible string beats an empty --model.
-    return "claude-opus-5"
+    # Keep this in lockstep with the registry flagship (claude-opus-4-8).
+    return "claude-opus-4-8"
 
 
 def _is_usable_model(model: str) -> bool:

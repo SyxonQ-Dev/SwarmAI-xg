@@ -46,12 +46,18 @@ from __future__ import annotations
 #
 # FLAGSHIP FIRST (see the order warning in the module docstring).
 #
+# ⚠️ Flagship is DELIBERATELY CHOSEN, not "newest-version-wins". claude-opus-5
+# is present and selectable but is INTENTIONALLY NOT first: in practice it ran
+# far slower per turn, did not follow sedimented cognition, and did not converge
+# on adversarial loops — so the flagship/default is pinned to claude-opus-4-8.
+# Do NOT "correct" this ordering to put the highest version first; that would
+# silently re-promote opus-5 to the default (the reason it sits second).
 # Bedrock IDs are NOT mechanically derivable from the short name — note that
 # 4-6 carries a "-v1" suffix while 4-8 and 5 do not. Never synthesize an ID as
 # f"us.anthropic.{short_name}"; look it up here.
 MODEL_REGISTRY: dict[str, str] = {
-    "claude-opus-5": "us.anthropic.claude-opus-5",
     "claude-opus-4-8": "us.anthropic.claude-opus-4-8",
+    "claude-opus-5": "us.anthropic.claude-opus-5",
     "claude-opus-4-6": "us.anthropic.claude-opus-4-6-v1",
     "claude-sonnet-4-6": "us.anthropic.claude-sonnet-4-6",
 }
