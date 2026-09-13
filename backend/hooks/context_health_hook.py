@@ -929,13 +929,20 @@ class ContextHealthHook:
                         except Exception:
                             pass  # Best-effort — DDD cultivation is primary
 
+                    # discarded is logged alongside the rest because it is the
+                    # ONLY field that separates "every proposal was declined"
+                    # from "there was nothing to cultivate" — both leave
+                    # applied/escalated/rejected at zero.
                     logger.info(
                         "context_health: auto-cultivated %s/%s — "
-                        "applied=%d, escalated=%d, rejected=%d",
+                        "applied=%d, escalated=%d, rejected=%d, discarded=%d%s",
                         project_name, run_id,
                         result.get("applied", 0),
                         result.get("escalated", 0),
                         result.get("rejected", 0),
+                        result.get("discarded", 0),
+                        (f" ({result['discard_reasons']})"
+                         if result.get("discard_reasons") else ""),
                     )
                     # Section-name drift = config bug (lesson dropped), not a
                     # benign rejection — log at error level so it surfaces.

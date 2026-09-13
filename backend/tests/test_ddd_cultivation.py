@@ -860,7 +860,15 @@ class TestCultivateFromCorrections:
             result = cultivate_from_corrections(
                 [], "session_empty", "SwarmAI", project_dir
             )
-            assert result == {"applied": 0, "escalated": 0, "rejected": 0, "write_failed": 0, "retired": 0, "skipped_protected": 0, "drift_errors": []}
+            # Exact equality is deliberate: the result dict IS the observability
+            # contract, so a silently-added or silently-renamed outcome key must
+            # break here rather than reach the sink unnoticed.
+            assert result == {
+                "applied": 0, "escalated": 0, "rejected": 0, "write_failed": 0,
+                "retired": 0, "skipped_protected": 0,
+                "discarded": 0, "discard_reasons": {},
+                "drift_errors": [],
+            }
 
 
 class TestCultivateFromDecisions:
@@ -914,7 +922,15 @@ class TestCultivateFromDecisions:
             result = cultivate_from_decisions(
                 [], "session_empty", "SwarmAI", project_dir
             )
-            assert result == {"applied": 0, "escalated": 0, "rejected": 0, "write_failed": 0, "retired": 0, "skipped_protected": 0, "drift_errors": []}
+            # Exact equality is deliberate: the result dict IS the observability
+            # contract, so a silently-added or silently-renamed outcome key must
+            # break here rather than reach the sink unnoticed.
+            assert result == {
+                "applied": 0, "escalated": 0, "rejected": 0, "write_failed": 0,
+                "retired": 0, "skipped_protected": 0,
+                "discarded": 0, "discard_reasons": {},
+                "drift_errors": [],
+            }
 
     def test_real_corrections_without_keywords_still_classify(self):
         """PE-1: Real production corrections lack keywords but should still classify (not be
@@ -2500,6 +2516,124 @@ class TestCultivationOutcomeSink:
             health = read_cultivation_health(project_dir, window_days=7)
             assert health["write_failed"] == 0, "30d-old failure must be outside the 7d window"
             assert health["silent_learning_failure"] is False
+
+
+class TestDiscardObservability:
+    """AC4-AC6 — a fully-DISCARDED cultivation batch must be visible.
+
+    The gap this closes: admission_band can return "discard" (below the confidence
+    floor, judged suspect, noise, oversized, non-append, circuit-breaker) and the
+    live cultivation loop archives the entry to a recoverable sink and moves on —
+    incrementing NO counter. So the returned result dict had no discard tally, the
+    caller guard `if applied or escalated or rejected or ...` skipped a batch whose
+    ONLY outcome was discards, and the health block therefore reported a batch that
+    learned nothing as healthy. Measured on a live workspace: hundreds of entries in
+    the discard archive, none of them anywhere in the outcome sink.
+
+    The discard total is deliberately kept SEPARATE from silent_learning_failure.
+    A discard is usually the brain working — declining a low-confidence entry — so
+    folding it into the write-failure alarm would make the north-star flag fire
+    constantly and train the reader to ignore it.
+    """
+
+    def test_discard_total_and_reasons_are_persisted(self):
+        from core.ddd_cultivation import (
+            record_cultivation_outcome, read_cultivation_health,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            record_cultivation_outcome(project_dir, {
+                "applied": 0, "rejected": 0, "write_failed": 0, "escalated": 0,
+                "discarded": 4,
+                "discard_reasons": {"below_auto_threshold": 3, "judge": 1},
+            })
+            health = read_cultivation_health(project_dir, window_days=7)
+            assert health["discarded"] == 4, "the discard tally must survive the sink"
+            assert health["discard_reasons"]["below_auto_threshold"] == 3
+            assert health["discard_reasons"]["judge"] == 1
+
+    def test_all_discarded_batch_is_recorded_not_skipped(self):
+        """The caller GUARD must not treat an all-discard batch as 'nothing happened'.
+
+        Drives _cultivate_proposals rather than calling record_cultivation_outcome
+        directly: the guard being tested lives inside that function, so a test that
+        invokes the sink itself would pass with the guard fully reverted — it would
+        assert only that the sink accepts a dict. Verified by mutation: restoring the
+        original guard leaves this test RED and the direct-call version GREEN.
+        """
+        from core.ddd_cultivation import _cultivate_proposals, read_cultivation_health, CultivationProposal
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / "2-understanding").mkdir(parents=True)
+            (project_dir / "2-understanding" / "TECH.md").write_text(
+                "# TECH\n\n## Conventions\n\nexisting text\n", encoding="utf-8"
+            )
+            # Every proposal is noise -> every one is discarded, so EVERY other
+            # outcome counter is zero. That is precisely the batch the original guard
+            # threw away, leaving the recoverable archive to fill up unobserved.
+            proposals = [
+                CultivationProposal(
+                    target_doc="TECH.md", target_section="Conventions",
+                    content=c, change_type="append",
+                    source_run_id="r", confidence=0.9,
+                )
+                for c in ("ok", "yes", "done")
+            ]
+            result = _cultivate_proposals(proposals, project_dir)
+            assert result["applied"] == 0 and result["rejected"] == 0
+            assert result["discarded"] == 3, "all three must be tallied as discards"
+
+            sink = project_dir / ".artifacts" / "cultivation-outcomes.jsonl"
+            assert sink.exists(), (
+                "a batch that discarded everything is the MOST important one to "
+                "record — the guard must not read it as an empty batch"
+            )
+            assert read_cultivation_health(project_dir, window_days=7)["discarded"] == 3
+
+    def test_discard_does_not_fire_the_write_failure_alarm(self):
+        """AC6 — silent_learning_failure semantics are unchanged: write_failed only."""
+        from core.ddd_cultivation import (
+            record_cultivation_outcome, read_cultivation_health,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            record_cultivation_outcome(project_dir, {
+                "applied": 0, "rejected": 0, "write_failed": 0, "escalated": 0,
+                "discarded": 50, "discard_reasons": {"below_auto_threshold": 50},
+            })
+            health = read_cultivation_health(project_dir, window_days=7)
+            assert health["discarded"] == 50
+            assert health["silent_learning_failure"] is False, (
+                "a discard is the brain DECLINING, not the brain FAILING — folding it "
+                "into the north-star alarm would train the reader to ignore it"
+            )
+
+    def test_live_loop_counts_a_discard(self):
+        """The counter must be incremented by the LIVE path, not only accepted by the
+        sink. Drives _cultivate_proposals with a proposal that admission_band
+        discards, and asserts the returned dict tallies it."""
+        from core.ddd_cultivation import _cultivate_proposals, CultivationProposal
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / "2-understanding").mkdir(parents=True)
+            (project_dir / "2-understanding" / "TECH.md").write_text(
+                "# TECH\n\n## Conventions\n\nexisting text\n", encoding="utf-8"
+            )
+            # content that is_noise() rejects outright — the first branch of
+            # admission_band, so this discard needs no judge/LLM call and cannot
+            # flake on network or model availability.
+            proposal = CultivationProposal(
+                target_doc="TECH.md", target_section="Conventions",
+                content="ok", change_type="append",
+                source_run_id="r", confidence=0.9,
+            )
+            result = _cultivate_proposals([proposal], project_dir)
+            assert result.get("discarded", 0) >= 1, (
+                "the live loop discarded an entry but reported no discard"
+            )
+            assert sum(result.get("discard_reasons", {}).values()) == result["discarded"]
 
 
 class TestWorkspaceCultivationHealth:

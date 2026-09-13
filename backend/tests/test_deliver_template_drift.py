@@ -22,30 +22,54 @@ from pathlib import Path
 
 from core.runtime_hooks import _is_adversarial_intent
 
-_DELIVER_MD = (
-    Path(__file__).resolve().parents[1]
-    / "skills" / "s_autonomous-pipeline" / "stages" / "deliver.md"
-)
+_SKILL = Path(__file__).resolve().parents[1] / "skills" / "s_autonomous-pipeline"
+
+
+def _spawn_budget():
+    """Load ``scripts/spawn_budget.py``, the sole owner of the cap pattern.
+
+    Imported by path because the package directory (``s_autonomous-pipeline``)
+    contains a hyphen and cannot appear in a dotted import. This module used to
+    carry its own copy of the regex; two regexes for one contract drift apart
+    silently, so the emitter and this test now read the same definition.
+    """
+    import importlib.util
+
+    path = _SKILL / "scripts" / "spawn_budget.py"
+    spec = importlib.util.spec_from_file_location("spawn_budget", path)
+    assert spec and spec.loader, f"cannot load {path}"
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+#: The Gate-2 specialist prompt. It moved out of ``stages/deliver.md`` into its own
+#: whole-file prompt so that the orchestrator emits it (``scripts/spawn_prompt.py``)
+#: instead of retyping a fenced block. This module follows the content, not the
+#: old location — R27: a reader of a moved contract must be migrated with it.
+_DELIVER_MD = _SKILL / "data" / "gate-prompts" / "gate2-adversarial.md"
+
+#: The DELIVER stage doc itself. Distinct from the prompt above on purpose: the
+#: prompt is what a sub-agent receives, while this file holds the orchestrator's
+#: own spawn instructions. Only the prompt body moved.
+_DELIVER_STAGE_MD = _SKILL / "stages" / "deliver.md"
 
 
 def _extract_specialist_template_head(text: str) -> str:
-    """Return the HEAD of the fenced specialist prompt template — the leading
-    instruction block BEFORE the first '## ' section (## Context, ## Checklist,
-    etc.). This head is what LEADS every spawned specialist prompt and is the part
-    that must carry the adversarial signal; matching incidental prose deeper in the
-    block (e.g. the 'Restraint' section mentioning 'adversarial found 5') would be
-    test-theater (RP47) — a match that does not reflect the spawn-prompt lead."""
-    marker = "Sub-agent prompt template (per specialist):"
-    idx = text.find(marker)
-    assert idx != -1, "deliver.md no longer has the specialist prompt template marker"
-    fence_open = text.find("```", idx)
-    assert fence_open != -1, "specialist template fence not found"
-    fence_close = text.find("```", fence_open + 3)
-    assert fence_close != -1, "specialist template closing fence not found"
-    block = text[fence_open + 3:fence_close]
-    # Head = everything before the first markdown section header.
-    head_end = block.find("\n## ")
-    return block if head_end == -1 else block[:head_end]
+    """Return the HEAD of the specialist prompt — the leading instruction block
+    BEFORE the first '## ' section (## Context, ## Checklist, etc.).
+
+    This head is what LEADS every spawned specialist prompt and is the part that
+    must carry the adversarial signal; matching incidental prose deeper in the
+    body (e.g. the 'Restraint' section mentioning 'adversarial found 5') would be
+    test-theater (RP47) — a match that does not reflect the spawn-prompt lead.
+
+    ``text`` is now the WHOLE gate-prompt file rather than a fenced block carved
+    out of ``deliver.md``. No fence is located because none encloses the prompt
+    any more: the Gate-1 prompt contains a nested ``` block, and a
+    find-the-next-fence extractor closed on it and silently dropped the tail.
+    """
+    head_end = text.find("\n## ")
+    return text if head_end == -1 else text[:head_end]
 
 
 def test_specialist_template_is_classified_adversarial():
@@ -54,11 +78,11 @@ def test_specialist_template_is_classified_adversarial():
     never emit the _adv_ marker and the commit gate blocks the pipeline's own work."""
     head = _extract_specialist_template_head(_DELIVER_MD.read_text())
     assert _is_adversarial_intent("", "", head) is True, (
-        "deliver.md specialist template no longer matches _is_adversarial_intent — "
-        "the pipeline's canonical adversarial review would stop emitting the _adv_ "
-        "marker and block its own commits. Restore an adversarial phrase (e.g. "
-        "'Adversarially review this changeset — hunt for bugs, regressions and "
-        "security issues in this diff.') to the template head."
+        "data/gate-prompts/gate2-adversarial.md no longer matches "
+        "_is_adversarial_intent — the pipeline's canonical adversarial review would "
+        "stop emitting the _adv_ marker and block its own commits. Restore an "
+        "adversarial phrase (e.g. 'Adversarially review this changeset — hunt for "
+        "bugs, regressions and security issues in this diff.') to the prompt head."
     )
 
 
@@ -97,12 +121,16 @@ _AUTHORITY_RULES = (
     ("budget never authorizes skipping", r"[Nn]ever\s+let\s+the\s+budget\s+authorize\s+skipping"),
 )
 
-# Templates whose budget text is INSIDE a fenced code block — i.e. literally
-# pasted into a spawn prompt, so their concrete numbers do reach the sub-agent.
+# The prompts that reach a sub-agent VERBATIM, so their concrete numbers are what
+# actually bound it. These are now whole files under data/gate-prompts/ rather than
+# fenced blocks inside the stage docs: the Gate-1 prompt contains a nested ``` block,
+# so any find-the-next-fence extraction truncated it — dropping the mandatory
+# output-format spec while the caps survived, which left the caps-based check green.
+# A whole file has no fence to mis-pair.
 _IN_FENCE_TEMPLATES = (
-    _SKILL_ROOT / "stages" / "deliver.md",
-    _SKILL_ROOT / "stages" / "evaluate.md",
-    _SKILL_ROOT / "stages" / "build.md",
+    _SKILL_ROOT / "data" / "gate-prompts" / "gate2-adversarial.md",
+    _SKILL_ROOT / "data" / "gate-prompts" / "gate0-skeptic.md",
+    _SKILL_ROOT / "data" / "gate-prompts" / "gate1-skeptic.md",
 )
 
 # Files that are referenced by PATH only (never pasted). They must not carry a
@@ -146,11 +174,7 @@ def test_in_fence_templates_state_concrete_caps():
     while the cap silently vanished. One contract, many wordings is exactly the
     drift class this module exists to stop.
     """
-    caps_re = re.compile(
-        r"(?:at\s+most|no\s+more\s+than|up\s+to|max(?:imum)?(?:\s+of)?|limit(?:ed)?\s+to|"
-        r"\u2264|<=)\s*(\d+)\s*(?:more\s+)?(?:files?|tool)",
-        re.I | re.S,
-    )
+    caps_re = _spawn_budget().CAPS_RE
     for path in _IN_FENCE_TEMPLATES:
         text = path.read_text()
         idx = text.find(_BUDGET_MARKER)
@@ -242,7 +266,10 @@ def test_no_hardcoded_model_directive_in_spawn_config():
     replacement, which would decay identically at the next default change.
     Review quality comes from bounded scope plus fresh context, not a model name.
     """
-    text = _DELIVER_MD.read_text()
+    # Reads the STAGE DOC, not the prompt file: the "Sub-agent configuration"
+    # block is orchestrator-facing prose about how to spawn, and it stayed in
+    # deliver.md when the prompt BODY moved to data/gate-prompts/.
+    text = _DELIVER_STAGE_MD.read_text()
     assert "default model (opus)" not in text, (
         "deliver.md re-introduced the exact retired model directive. Sub-agent "
         "review quality is governed by bounded scope + fresh context, not by "

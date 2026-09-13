@@ -8,17 +8,67 @@ V2 upgrades over V1:
 - Anti-runaway: thresholds only increase, ceiling 0.95
 
 Public symbols:
+    - STATUS_APPROVED         — the persisted status a human approval writes
+    - STATUS_REJECTED         — the persisted status a human rejection writes
     - RejectionReason         — enum of rejection categories
     - ProposalFeedbackTracker — main tracker class (compute stats, adjust thresholds)
 """
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# ── The persisted outcome vocabulary — ONE definition, consumed by BOTH sides ──
+#
+# These are the values a human decision writes into a proposal's JSON file, and
+# the values this module counts when it measures a channel's precision. Both the
+# PRODUCER (routers.cultivation's approve/reject endpoints, via
+# mark_proposal_approved / mark_proposal_rejected) and the CONSUMER
+# (compute_channel_stats below) import these names, so the two sides are one
+# edge on a single definition rather than two independent string literals.
+#
+# Why that matters here specifically: this module used to count successes on the
+# literal "approved", which nothing writes into a proposal file — the approve path
+# writes "applied". (An unrelated "approved" is written onto the channel-approval
+# DB row in channels/gateway: a different data plane that never reaches the
+# proposal glob below, so the arm was dead here either way.) The success arm
+# therefore read a permanent zero, precision computed as 0/(0+rejections) = 0.0,
+# and get_adjusted_threshold ratcheted the channel's auto-write bar UP on a dead
+# input. Renaming the vocabulary must now break loudly at one place rather than
+# silently orphan the success arm again.
+STATUS_APPROVED = "applied"
+STATUS_REJECTED = "rejected"
+
+# The same write-through binding for the field that TRAVELS WITH a rejection.
+# Unifying the status alone left this sibling split: the writer persisted the
+# reason under "reject_reason" while the breakdown below looked for
+# "rejection_reason", so rejection_breakdown stayed permanently empty — and an
+# empty breakdown has no dominant reason, which made get_adjusted_threshold
+# unable to take its targeted branch and made check_self_correction return None
+# at the exact moment a persistently-bad channel crossed the correction batch
+# size. Same failure shape as the status arm, one field over.
+REJECTION_REASON_KEY = "rejection_reason"
+# Decisions already on disk carry whatever spelling their writer emitted, and a
+# census of the live workspace found THREE. Read them all (canonical name first)
+# rather than backfilling: rewriting a past human decision to normalise its key
+# is a migration this does not need, and history is not ours to edit. Covering
+# only SOME of the spellings is the quiet failure mode — the breakdown still
+# fills, just from a minority of the evidence, so it looks like it works.
+_LEGACY_REJECTION_REASON_KEYS = ("rejected_reason", "reject_reason")
+
+# Anything outside REASON_FIX_MAP collapses here. The breakdown is PERSISTED and
+# feeds a dominant-reason vote, so its keys must be a CLOSED set: real reasons
+# embed a date ("Batch reject 2026-05-20: ..."), which would mint a permanent key
+# per rejection campaign AND let an unclassifiable string win that vote and steer
+# the threshold adjustment by accident. The count is kept — an unclassifiable
+# rejection is still a signal about the channel — while the key space stays the
+# known vocabulary plus this one bucket.
+UNCLASSIFIED_REASON = "other"
 
 # Threshold bounds — never too aggressive, never too permissive
 THRESHOLD_FLOOR = 0.5
@@ -52,6 +102,48 @@ REASON_FIX_MAP: dict[str, str] = {
     "duplicate": "enable_cross_proposal_hash",
     "judgment_needed": "demote_to_suggest_only",
 }
+
+
+def canonical_rejection_reason(raw: object) -> str:
+    """Map a human-written rejection reason onto a bounded token.
+
+    The reason arrives as free text (an HTTP query param on the reject endpoint),
+    so real persisted values read like ``"false positive: filename/attribute/
+    noise, not a code symbol"`` while ``REASON_FIX_MAP`` is keyed on
+    ``"false_positive"``. Two things go wrong if the raw string is used as the
+    breakdown key: the fix map never resolves, and the key space of a persisted
+    dict grows one sentence at a time.
+
+    So the leading clause — everything before the first ``:``, em-dash or
+    spaced hyphen, which is where a writer states the CATEGORY before explaining
+    it — is normalised to a snake_case token, and a token outside
+    ``REASON_FIX_MAP`` collapses to ``UNCLASSIFIED_REASON``. Length-capping alone
+    was not enough: measured on the live workspace, the dominant real reason is
+    ``"Batch reject 2026-05-20: ..."`` — a date, so each campaign would mint its
+    own permanent key, and being unrecognised it would still WIN the
+    dominant-reason vote and select a threshold-adjustment branch nobody
+    intended. Collapsing keeps the count (an unclassifiable rejection is still a
+    signal) while making the key space closed.
+
+    ``raw`` is typed ``object`` on purpose: it comes from arbitrary persisted
+    JSON, so a dict/int/list is reachable — and a bare ``.strip()`` on one used
+    to raise out of the whole per-channel scan, killing stats for EVERY channel
+    (the sole caller logs at debug and moves on, so the metric died silently and
+    the self-correction loop right after it never ran). A non-string reason is
+    unclassifiable but still a rejection that happened, so it collapses to the
+    bounded bucket rather than being dropped or crashing.
+    """
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        return UNCLASSIFIED_REASON
+    if not raw.strip():
+        return ""
+    head = re.split(r"[:—–]|\s-\s", raw, maxsplit=1)[0]
+    token = re.sub(r"[^a-z0-9]+", "_", head.strip().lower()).strip("_")
+    if not token:
+        return UNCLASSIFIED_REASON
+    return token if token in REASON_FIX_MAP else UNCLASSIFIED_REASON
 
 
 class ProposalFeedbackTracker:
@@ -111,12 +203,32 @@ class ProposalFeedbackTracker:
                 }
 
             stats[source]["generated"] += 1
-            if status == "approved":
+            if status == STATUS_APPROVED:
                 stats[source]["approved"] += 1
-            elif status == "rejected":
+            elif status == STATUS_REJECTED:
                 stats[source]["rejected"] += 1
-                # Track rejection reason
-                reason = data.get("rejection_reason", "")
+                # Track rejection reason. Read the shared key, falling back to
+                # the pre-unification spelling so decisions already on disk keep
+                # counting; canonicalise so the breakdown keys stay bounded and
+                # resolvable against REASON_FIX_MAP.
+                # Prefer the canonical key, but a file can carry two spellings at
+                # once (a legacy writer plus a re-decision), and giving the
+                # canonical key UNCONDITIONAL precedence discarded resolvable
+                # evidence for an unclassifiable bucket. So take the first
+                # spelling that canonicalises to a FIX-MAP token, and fall back
+                # to canonical-key-first only when none of them resolves.
+                candidates = [data.get(REJECTION_REASON_KEY)] + [
+                    data.get(k) for k in _LEGACY_REJECTION_REASON_KEYS
+                ]
+                candidates = [c for c in candidates if c]
+                reason = next(
+                    (
+                        r
+                        for r in (canonical_rejection_reason(c) for c in candidates)
+                        if r in REASON_FIX_MAP
+                    ),
+                    canonical_rejection_reason(candidates[0]) if candidates else "",
+                )
                 if reason:
                     breakdown = stats[source]["rejection_breakdown"]
                     breakdown[reason] = breakdown.get(reason, 0) + 1

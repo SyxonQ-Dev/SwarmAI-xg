@@ -392,13 +392,13 @@ Read from `backend/skills/` (source of truth), NOT `.claude/skills/`
 
 | Stage | Read (BLOCKING) | Scripts to Run |
 |-------|----------------|----------------|
-| evaluate | `stages/evaluate.md` | — |
+| evaluate | `stages/evaluate.md` | `scripts/spawn_prompt.py --gate gate0-skeptic` (Gate-0 M3 skeptic) |
 | think | `stages/think.md` | — |
 | plan | `stages/plan.md` | — |
-| build | `stages/build.md` | — |
+| build | `stages/build.md` | `scripts/spawn_prompt.py --gate gate1-skeptic` (Gate-1 Skeptic+SSA) |
 | review | `stages/review.md` AND `REVIEW_PATTERNS.md` AND `OPERATIONAL_PATTERNS.md` | — |
 | test | `stages/test.md` | `scripts/wtf_gate.py` |
-| deliver | `stages/deliver.md` | — |
+| deliver | `stages/deliver.md` | `scripts/spawn_prompt.py --gate gate2-adversarial` (Gate-2 specialists) |
 | reflect | `stages/reflect.md` | — |
 | complete | `stages/complete.md` (Step 6 — output format spec; fresh-read at the decision point) | — |
 
@@ -1387,6 +1387,17 @@ A: ①GO ②3alt ③4AC ④★PASS | B: ⑤3R3G ⑥clean ⑦28/0 | C: ⑧★2fix
       truncate a live review that is still finding real issues (STEERING #2).
       Never let the budget authorize skipping a checklist item — the reviewer
       writes `N/A: <reason>` or `UNCHECKED: <item> — budget exhausted` instead.
+
+    **For the three GATE spawns, do not compose the prompt at all — emit it.**
+    Gate-0's skeptic, Gate-1's Skeptic+SSA and Gate-2's specialists each have
+    their prompt in `data/gate-prompts/`, and `scripts/spawn_prompt.py --gate
+    <id>` prints it ready to paste. Use its output ONLY on exit 0: exit 2 means
+    the prompt states no numeric cap and stdout is deliberately EMPTY, so a
+    budget-less prompt cannot be emitted. This exists because stating the rule
+    here was not enough twice — the prompts are hand-composed, and a rule in a
+    document only reaches a prompt the author actually copies. Emitting keeps
+    the cap in code. An ad-hoc spawn (not one of the three gates) still needs
+    you to write the budget yourself, per the three rules above.
 
     The failure shape this prevents: a skeptic prompt carrying a long list of
     numbered verify-this-yourself sub-questions searches for a very long time and

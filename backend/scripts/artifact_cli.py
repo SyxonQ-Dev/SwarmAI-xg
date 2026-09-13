@@ -5439,6 +5439,35 @@ def _collect_judgment_decisions(run_state: dict) -> list[str]:
     return tagged
 
 
+def _summarise_cultivation_result(sub_results: "list[dict]") -> dict:
+    """Merge one or more cultivation results into the summary this command prints.
+
+    Extracted so the aggregation is drivable on its own — it used to be an inline
+    loop over a hardcoded key tuple, which is how the discard tally went missing
+    here: the live loop counted declines and recorded them durably, but this
+    surface enumerated only applied/escalated/rejected/retired, so a batch where
+    every proposal was declined printed all-zeros and read as "no work to do".
+    That is the same silence the discard counter exists to end, one layer out.
+
+    Discards are summed and their per-category tallies ADDED across sub-results
+    (lessons and decisions are two separate calls, so overwriting would drop one
+    source's attribution).
+    """
+    result: dict = {
+        "applied": 0, "escalated": 0, "rejected": 0, "retired": 0,
+        "discarded": 0, "discard_reasons": {}, "drift_errors": [],
+    }
+    for sub in sub_results:
+        for key in ("applied", "escalated", "rejected", "retired", "discarded"):
+            result[key] += sub.get(key, 0)
+        for category, count in (sub.get("discard_reasons") or {}).items():
+            result["discard_reasons"][category] = (
+                result["discard_reasons"].get(category, 0) + count
+            )
+        result["drift_errors"].extend(sub.get("drift_errors", []))
+    return result
+
+
 def cmd_run_cultivate(args, reg: ArtifactRegistry) -> None:
     """Apply pipeline lessons + judgment decisions to DDD docs via cultivation.
 
@@ -5486,17 +5515,18 @@ def cmd_run_cultivate(args, reg: ArtifactRegistry) -> None:
     # the [decision] tag routes decisions to PROJECT § Recent Decisions).
     from core.ddd_cultivation import cultivate_from_reflect, cultivate_from_decisions
 
-    result = {"applied": 0, "escalated": 0, "rejected": 0, "retired": 0, "drift_errors": []}
+    sub_results = []
     if lessons:
-        lres = cultivate_from_reflect(lessons, args.run_id, args.project, project_dir)
-        for k in ("applied", "escalated", "rejected", "retired"):
-            result[k] += lres.get(k, 0)
-        result["drift_errors"].extend(lres.get("drift_errors", []))
+        sub_results.append(
+            cultivate_from_reflect(lessons, args.run_id, args.project, project_dir)
+        )
     if decisions:
-        dres = cultivate_from_decisions(decisions, args.run_id, args.project, project_dir)
-        for k in ("applied", "escalated", "rejected", "retired"):
-            result[k] += dres.get(k, 0)
-        result["drift_errors"].extend(dres.get("drift_errors", []))
+        sub_results.append(
+            cultivate_from_decisions(decisions, args.run_id, args.project, project_dir)
+        )
+
+    result = _summarise_cultivation_result(sub_results)
+    if decisions:
         result["judgment_decisions_cultivated"] = len(decisions)
 
     print(json.dumps(result, indent=2))

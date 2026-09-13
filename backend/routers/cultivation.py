@@ -20,6 +20,11 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from core.initialization_manager import initialization_manager
+from core.proposal_feedback import (
+    REJECTION_REASON_KEY,
+    STATUS_APPROVED,
+    STATUS_REJECTED,
+)
 from core.ddd_cultivation import (
     AWAITING_HUMAN_STATUSES,
     CultivationProposal,
@@ -148,8 +153,8 @@ async def approve_proposal(
         # human clicks). Terminate it as rejected + return 200 cleared, do NOT 500 and
         # leave it pending (the old behavior → unclearable churn).
         if status == "duplicate":
-            _update_proposal_status(
-                project_dir, proposal_id, "rejected",
+            mark_proposal_rejected(
+                project_dir, proposal_id,
                 reason="duplicate — content already present in the doc",
             )
             logger.info(
@@ -191,7 +196,7 @@ async def approve_proposal(
 
         # Update status in file (inside the lock — the mark is part of the
         # critical section, not a post-release write).
-        _update_proposal_status(project_dir, proposal_id, "applied")
+        mark_proposal_approved(project_dir, proposal_id)
 
         # Log application
         log_application(proposal, project_dir)
@@ -225,7 +230,11 @@ async def reject_proposal(
         if not proposal:
             raise HTTPException(status_code=404, detail=f"Proposal '{proposal_id}' not found")
 
-        _update_proposal_status(project_dir, proposal_id, "rejected", reason=reason)
+        # Normalise before the value is PERSISTED: the raw Query sentinel is not JSON
+        # serializable, so it would fail mid-write inside _update_proposal_status.
+        mark_proposal_rejected(
+            project_dir, proposal_id, reason=_query_str(reason)
+        )
 
     logger.info("Cultivation proposal %s rejected (reason: %s)", proposal_id, reason)
 
@@ -307,13 +316,40 @@ def _proposal_lock(project_dir: Path, proposal_id: str):
         lock_fd.close()  # NO unlink — see docstring (inode race)
 
 
+def mark_proposal_approved(project_dir: Path, proposal_id: str) -> None:
+    """Persist a human APPROVAL outcome. The single writer of the success status.
+
+    Named (rather than an inline literal at the endpoint) so that the producer and
+    the consumer that measures channel precision — proposal_feedback's
+    compute_channel_stats — sit on ONE definition, STATUS_APPROVED. The success arm
+    was previously orphaned by exactly this seam: the endpoint wrote "applied" while
+    the reader counted "approved", so precision read 0.0 forever and the auto-write
+    threshold ratcheted up on a dead input. Route every approval through here.
+    """
+    _update_proposal_status(project_dir, proposal_id, STATUS_APPROVED)
+
+
+def mark_proposal_rejected(
+    project_dir: Path, proposal_id: str, reason: Optional[str] = None
+) -> None:
+    """Persist a human REJECTION outcome. The single writer of the reject status.
+
+    Counterpart to mark_proposal_approved — see that docstring for why the
+    vocabulary lives in one constant shared with the reader.
+    """
+    _update_proposal_status(project_dir, proposal_id, STATUS_REJECTED, reason=reason)
+
+
 def _update_proposal_status(
     project_dir: Path,
     proposal_id: str,
     new_status: str,
     reason: Optional[str] = None,
 ) -> None:
-    """Update a proposal's status in its JSON file."""
+    """Write a raw status value. Prefer mark_proposal_approved /
+    mark_proposal_rejected — they bind the OUTCOME vocabulary to the constants the
+    precision reader consumes. This low-level form stays for statuses that are not
+    an approve/reject outcome."""
     proposals_dir = project_dir / ".artifacts" / "proposals"
     if not proposals_dir.exists():
         return
@@ -324,7 +360,10 @@ def _update_proposal_status(
             if data.get("id") == proposal_id:
                 data["status"] = new_status
                 if reason:
-                    data["reject_reason"] = reason
+                    # The shared key, for the same reason the status is shared:
+                    # the precision reader buckets rejections by this field, and
+                    # a second spelling here makes its breakdown silently empty.
+                    data[REJECTION_REASON_KEY] = reason
                 f.write_text(
                     json.dumps(data, indent=2, ensure_ascii=False),
                     encoding="utf-8",

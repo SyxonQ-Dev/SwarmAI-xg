@@ -1,5 +1,5 @@
 # Performance Specialist Review
-<!-- version: 2026-07-21 | synced with: REVIEW_PATTERNS.md RP1-RP52 -->
+<!-- version: 2026-09-13 | synced with: REVIEW_PATTERNS.md RP1-RP84 -->
 
 Scope: When changeset touches backend endpoints, database queries, loops over
 collections, or frontend rendering paths.

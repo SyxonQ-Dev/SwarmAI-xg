@@ -12,7 +12,7 @@ status: current
 > **Last refresh — 2026-08-31 (drift-calibration pass):** Re-verified every concrete
 > claim against live source and corrected the drift that had accumulated since the
 > 2026-07-20 pass. Changes: the runtime-pattern set is stated as a **range that points
-> at its SSOT (`REVIEW_PATTERNS.md`, currently RP1-RP81)** rather than a pinned count —
+> at its SSOT (`REVIEW_PATTERNS.md`, currently RP1-RP84)** rather than a pinned count —
 > a frozen number ("40", "51") drifts into a lie the next time a pattern lands, so this
 > doc names the range and defers the exact tally to the file. Added **TEST Layer 4
 > (Cross-Boundary E2E)** — the code-enforced seam-driving layer that fires when EVALUATE
@@ -56,7 +56,7 @@ Dual-mode pipeline (bounded tasks + open-ended goals) with shared decision front
 | Self-review blind spot elimination | Fresh-context adversarial sub-agents (zero builder bias) |
 | Failure mode safety | Always "escalate with gap report" — never "ship despite known issues" |
 | Cross-run learning | pipeline_intelligence.json + DDD cultivation + RP/OP pattern growth |
-| Structural error prevention | The runtime-pattern checklist (RP1-RP81, SSOT `REVIEW_PATTERNS.md`) + 8 operational invariants (OP1-OP8) |
+| Structural error prevention | The runtime-pattern checklist (RP1-RP84, SSOT `REVIEW_PATTERNS.md`) + 8 operational invariants (OP1-OP8) |
 | Dual execution modes | Bounded tasks (linear) + open-ended goals (iterative) — same quality gates |
 | Background autonomy | Job System decouples pipeline from chat; runs overnight, notifies on completion |
 
@@ -330,7 +330,7 @@ Why gates and not just careful prompting: **carefulness doesn't scale, gates do.
 **Trigger:** >3 files OR >100 lines OR touches auth/data/infra code.
 
 Spawn 3 parallel sub-agents:
-- **Code Quality Agent** — RP checklist (RP1-RP81), integration trace, depth analysis
+- **Code Quality Agent** — RP checklist (RP1-RP84), integration trace, depth analysis
 - **Security & Safety Agent** — Confidence-gated scan per file (1-10 + exploit scenario), wire test (WR1-4)
 - **UX & Test Agent** — Only if frontend files changed; discoverability, feedback states, escape handling
 
@@ -473,7 +473,7 @@ Plus **Meta-Review** sub-agent for operational blind spots.
 | Agent | File | Responsibility |
 |-------|------|---------------|
 | **Spec Compliance** | `review-agents/spec-compliance.md` | AC verification: MISSING / EXTRA / MISUNDERSTOOD. Serial, blocking. |
-| **Code Quality** | `review-agents/code-quality.md` | RP checklist (RP1-RP81), integration trace, replace/move parity, depth/seam analysis |
+| **Code Quality** | `review-agents/code-quality.md` | RP checklist (RP1-RP84), integration trace, replace/move parity, depth/seam analysis |
 | **Security & Safety** | `review-agents/security-safety.md` | Confidence-gated security scan (1-10 per file + exploit scenario), wire test WR1-4 |
 | **UX & Test** | `review-agents/ux-test.md` | Frontend-only. Discoverability, feedback states, escape handling, E2E trace |
 
@@ -495,7 +495,7 @@ Dispatched during DELIVER's adversarial gate. Each is scope-gated, produces JSON
 
 ### Pattern Checklists
 
-**REVIEW_PATTERNS.md (SSOT — currently RP1-RP81)** — production-proven bug patterns, each
+**REVIEW_PATTERNS.md (SSOT — currently RP1-RP84)** — production-proven bug patterns, each
 distilled from a real adversarial-review miss and organized by category. The exact roster grows
 as REFLECT adds patterns, so the authoritative list is the file itself; the standing categories:
 - Resource lifecycle (subprocess/temp-file/handle release on both success and failure paths)
@@ -793,7 +793,7 @@ This is Coding as Black Box — the box guarantees push-ready; crossing to the r
 s_autonomous-pipeline/
 ├── SKILL.md                    # Skill frontmatter + description
 ├── INSTRUCTIONS.md             # Orchestrator (the mechanical run-loop)
-├── REVIEW_PATTERNS.md          # RP bug pattern checklist (SSOT, RP1-RP81)
+├── REVIEW_PATTERNS.md          # RP bug pattern checklist (SSOT, RP1-RP84)
 ├── OPERATIONAL_PATTERNS.md     # OP1-OP8 system invariants
 ├── stages/
 │   ├── evaluate.md             # Stage 1: intake + profile selection (Gate 0)

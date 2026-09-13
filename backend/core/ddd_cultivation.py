@@ -117,6 +117,12 @@ from core.persist_routing import (
     NOISE_PATTERNS,
 )
 
+# The persisted outcome vocabulary lives in ONE place (see that module's
+# docstring for why): both the human-approval writer in routers.cultivation and
+# the precision reader consume these, so an auto-apply here cannot invent a
+# fourth spelling of "this landed".
+from core.proposal_feedback import STATUS_APPROVED
+
 logger = logging.getLogger(__name__)
 
 # Derive SAFE_APPEND_SECTIONS from the routing table (single source of truth)
@@ -2149,6 +2155,15 @@ def record_cultivation_outcome(project_dir: Path, result: dict) -> None:
             "write_failed": int(result.get("write_failed", 0)),
             "escalated": int(result.get("escalated", 0)),
             "retired": int(result.get("retired", 0)),
+            # The outcome this sink used to be blind to. An entry the admission band
+            # DECLINED (below the confidence floor, judged suspect, noise, oversized)
+            # was archived to a recoverable file and the loop moved on without
+            # incrementing anything here — so a batch that learned NOTHING recorded
+            # the same way as a batch with no work to do. Broken out by reason
+            # category so "the bar is too high" is distinguishable from "the judge is
+            # refusing" without reading the archive by hand.
+            "discarded": int(result.get("discarded", 0)),
+            "discard_reasons": dict(result.get("discard_reasons") or {}),
         }
         with open(sink, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -2171,6 +2186,13 @@ def read_cultivation_health(project_dir: Path, window_days: int = 7) -> dict:
         "healthy_reject": 0,
         "write_failed": 0,
         "escalated": 0,
+        # Surfaced ALONGSIDE the north-star flag, deliberately NOT folded into it: a
+        # discard is usually the brain declining a weak entry (working as designed),
+        # so counting it as a silent failure would keep the alarm permanently lit and
+        # teach the reader to ignore it. What it DOES answer is the question the
+        # health block could not: "did this window actually learn anything?"
+        "discarded": 0,
+        "discard_reasons": {},
         "silent_learning_failure": False,
         "computed_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -2195,6 +2217,11 @@ def read_cultivation_health(project_dir: Path, window_days: int = 7) -> dict:
             health["healthy_reject"] += int(rec.get("rejected", 0))
             health["write_failed"] += int(rec.get("write_failed", 0))
             health["escalated"] += int(rec.get("escalated", 0))
+            health["discarded"] += int(rec.get("discarded", 0))
+            for _cat, _n in (rec.get("discard_reasons") or {}).items():
+                health["discard_reasons"][_cat] = (
+                    health["discard_reasons"].get(_cat, 0) + int(_n)
+                )
     except OSError as exc:
         logger.warning("read_cultivation_health failed (non-fatal): %s", exc)
         return health
@@ -2325,7 +2352,28 @@ def _cultivate_proposals(
     write_failed = 0
     retired = 0
     skipped_protected = 0
+    # A DECLINED entry is an outcome, not an absence of one. Every discard site below
+    # archives the entry to a recoverable sink and continues; before these counters
+    # existed none of them incremented anything, so an all-declined batch returned a
+    # dict of zeros and the caller guard read it as "no work happened".
+    discarded = 0
+    discard_reasons: dict[str, int] = {}
     drift_errors: List[str] = []
+
+    def _count_discard(reason: str) -> None:
+        """Tally one declined entry under its reason CATEGORY.
+
+        admission_band returns reasons shaped ``category`` or ``category:detail``
+        (e.g. ``below_auto_threshold``, ``judge:suspect:<why>``, ``noise:<which>``).
+        Bucketing on the part before the first colon keeps the breakdown a small
+        fixed set of causes instead of an unbounded spray of one-off strings — the
+        question it must answer is "is the bar too high, or is the judge refusing?",
+        which a per-detail histogram obscures.
+        """
+        nonlocal discarded
+        discarded += 1
+        cat = reason.split(":", 1)[0] or "unknown"
+        discard_reasons[cat] = discard_reasons.get(cat, 0) + 1
 
     for proposal in proposals:
         # AUTONOMY-FIRST (run_86f44f35): the protected-zone pre-drop + candidates sink are
@@ -2380,7 +2428,7 @@ def _cultivate_proposals(
                         proposal.evidence[:120].replace("\n", "\\n"),
                         proposal.source_run_id,
                     )
-                    proposal.status = "applied"
+                    proposal.status = STATUS_APPROVED
                     log_application(proposal, project_dir)
                     _record_auto_retire(project_dir)
                     retired += 1
@@ -2412,6 +2460,7 @@ def _cultivate_proposals(
             # (Gate-2: a fallible-judge / below-floor drop must be recoverable, not a
             # silent permanent loss), then drop. No human queue.
             _archive_discarded_proposal(proposal, project_dir, _breason)
+            _count_discard(_breason)
             logger.info(
                 "admission: DISCARD %s § %s (%s, archived): %.80s",
                 proposal.target_doc, proposal.target_section, _breason, proposal.content,
@@ -2422,6 +2471,7 @@ def _cultivate_proposals(
             # trust/judge outcome). No human queue — but a gate-error entry MUST be
             # archived (Gate-2 #2: a gate crash was silently losing the entry), then dropped.
             _archive_discarded_proposal(proposal, project_dir, f"gate_error:{_breason}")
+            _count_discard(f"gate_error:{_breason}")
             logger.warning(
                 "admission: gate-error → archived + dropped (no human queue) %s § %s (%s): %.80s",
                 proposal.target_doc, proposal.target_section, _breason, proposal.content,
@@ -2430,7 +2480,7 @@ def _cultivate_proposals(
         if _verdict == "auto":
             status = apply_to_ddd(proposal, project_dir)
             if status == "applied":
-                proposal.status = "applied"
+                proposal.status = STATUS_APPROVED
                 log_application(proposal, project_dir)
                 applied += 1
             elif status == "created_section":
@@ -2452,7 +2502,7 @@ def _cultivate_proposals(
                 )
                 logger.warning(msg)
                 drift_errors.append(msg)
-                proposal.status = "applied"
+                proposal.status = STATUS_APPROVED
                 log_application(proposal, project_dir, created_section=True)
                 applied += 1
             elif status in ("locked", "doc_missing"):
@@ -2476,6 +2526,13 @@ def _cultivate_proposals(
         "write_failed": write_failed,
         "retired": retired,
         "skipped_protected": skipped_protected,
+        # NOT merged into "rejected". A reject is the brain reading the entry and
+        # declining it on content; a discard is the ADMISSION BAND refusing to judge
+        # it at all (below the confidence bar, judged suspect, noise, oversized).
+        # Collapsing them would hide the case that matters: a bar so high that
+        # nothing is ever judged reads exactly like a discerning brain.
+        "discarded": discarded,
+        "discard_reasons": discard_reasons,
         "drift_errors": drift_errors,
     }
     # M0 (run_abf49550): persist this batch's outcome to the durable per-project
@@ -2484,7 +2541,12 @@ def _cultivate_proposals(
     # skipped_protected included (Gate-2 red-team MED, run_97519f7c): an all-skipped
     # batch (only protected-zone lessons) must still record — else the volume of
     # auto-dropped architecture/SELF lessons is invisible to the weekly learning report.
-    if applied or escalated or rejected or write_failed or retired or skipped_protected:
+    # discarded included for the same reason skipped_protected was: an all-DISCARDED
+    # batch is the single most important one to record, and it was precisely the one
+    # this guard threw away — every other outcome was zero, so the batch looked empty
+    # while the recoverable archive filled up unobserved.
+    if (applied or escalated or rejected or write_failed or retired
+            or skipped_protected or discarded):
         record_cultivation_outcome(project_dir, result)
     return result
 

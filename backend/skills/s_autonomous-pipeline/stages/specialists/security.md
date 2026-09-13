@@ -1,5 +1,5 @@
 # Security Specialist Review
-<!-- version: 2026-08-23 | synced with: REVIEW_PATTERNS.md RP1-RP81 (incl. Agent-Safety RP65-RP80) -->
+<!-- version: 2026-08-23 | synced with: REVIEW_PATTERNS.md RP1-RP84 (incl. Agent-Safety RP65-RP80; RP82 collection-time guard) -->
 
 Scope: When changeset touches auth, user input handling, database queries, file paths,
 external API calls, or any endpoint/handler. NEVER_GATE — once dispatched (per

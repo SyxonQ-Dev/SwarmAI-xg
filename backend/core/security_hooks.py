@@ -2319,6 +2319,13 @@ GOVERNANCE_TIER2_PATTERNS: list[str] = [
     "*/.context/STEERING.md",
     "backend/context/STEERING.md",
     "*/s_autonomous-pipeline/stages/*.md",
+    # The gate sub-agent prompts. They were covered by the stages/ pattern above
+    # until they moved into their own files (whole-file prompts, emitted by
+    # scripts/spawn_prompt.py rather than retyped from a fenced block). Governance
+    # follows the CONTENT, not the directory it used to sit in — without this line
+    # the move would silently drop Tier-2 coverage from the text that instructs
+    # every gate reviewer.
+    "*/s_autonomous-pipeline/data/gate-prompts/*.md",
 ]
 
 
