@@ -100,6 +100,8 @@ echo "[release] Copying hive config..."
 rsync -a \
     --exclude='release.sh' \
     --exclude='update-hive.sh' \
+    --exclude='__pycache__' \
+    --exclude='*.pyc' \
     "${PROJECT_ROOT}/hive/" "${STAGING}/hive/"
 
 echo "[release] Copying VERSION..."
@@ -185,6 +187,8 @@ rsync -a \
     --exclude='.ddd-usage.json' \
     --exclude='.session_cultivated.json' \
     --exclude='.DS_Store' \
+    --exclude='__pycache__' \
+    --exclude='*.pyc' \
     "${LIVE_DDD}/" "${SEED}/Projects/SwarmAI/"
 echo "[release]   DDD files: $(find "${SEED}/Projects/SwarmAI" -type f | wc -l | tr -d ' ') (from live DDD: ${LIVE_DDD})"
 
